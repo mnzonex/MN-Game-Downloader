@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Download, Pause, Play, Trash2, WifiOff, Cpu, AlertTriangle, Folder, CheckCircle, Gamepad2, Clock, Calendar } from 'lucide-react';
 
 import { DownloadTask, DownloadStatus } from '../types';
+import { apiFetch, getApiUrl } from '../services/api';
 
 interface DownloadsQueueViewProps {
   tasks: DownloadTask[];
@@ -22,7 +23,7 @@ export const DownloadsQueueView: React.FC<DownloadsQueueViewProps> = ({
   const [scheduledTasks, setScheduledTasks] = useState<any[]>([]);
 
   const fetchScheduledTasks = () => {
-    fetch('/api/downloads/scheduled')
+    apiFetch('/api/downloads/scheduled')
       .then(res => res.json())
       .then(data => {
         if (data.scheduledTasks) {
@@ -49,7 +50,7 @@ export const DownloadsQueueView: React.FC<DownloadsQueueViewProps> = ({
 
   
   const onRemoveScheduledTask = (id: string) => {
-    fetch(`/api/downloads/scheduled/${id}`, { method: 'DELETE' })
+    apiFetch(`/api/downloads/scheduled/${id}`, { method: 'DELETE' })
       .then(() => fetchScheduledTasks())
       .catch(err => console.error(err));
   };
@@ -177,7 +178,7 @@ export const DownloadsQueueView: React.FC<DownloadsQueueViewProps> = ({
                 <div className="flex items-center gap-3 min-w-0">
                   {task.cover && task.cover.trim() !== '' ? (
                     <img
-                      src={task.cover}
+                      src={getApiUrl(task.cover)}
                       alt={task.title}
                       className="w-12 h-16 object-cover rounded-xl border border-slate-200 shrink-0 bg-slate-100 shadow-xs"
                       onError={(e) => {

@@ -14,7 +14,7 @@ import {
   FolderOpen
 } from 'lucide-react';
 import { DownloadTask } from '../types';
-import { apiFetch } from '../services/api';
+import { apiFetch, getApiUrl } from '../services/api';
 
 interface GamesLibraryViewProps {
   completedTasks: DownloadTask[];
@@ -241,7 +241,7 @@ export const GamesLibraryView: React.FC<GamesLibraryViewProps> = ({
                 {/* Cover Image */}
                 <div className="relative aspect-square bg-slate-900 overflow-hidden">
                   <img
-                    src={(game.cover && game.cover.trim() !== '') ? game.cover : 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=600'}
+                    src={(game.cover && game.cover.trim() !== '') ? getApiUrl(game.cover) : 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=600'}
                     alt={game.title}
                     className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
                     onError={(e) => {

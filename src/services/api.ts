@@ -3,16 +3,20 @@
  * Automatically routes calls to http://127.0.0.1:3000 when running under file:// or custom protocols.
  */
 
-export function getApiUrl(endpoint: string): string {
+export function getApiUrl(endpoint?: string | null): string {
+  if (!endpoint) return '';
+  if (endpoint.startsWith('http://') || endpoint.startsWith('https://') || endpoint.startsWith('data:')) {
+    return endpoint;
+  }
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
   if (typeof window !== 'undefined') {
     const isFileProtocol = window.location.protocol === 'file:';
-    if (isFileProtocol) {
+    if (isFileProtocol || window.location.origin.includes('file://') || window.location.port !== '3000') {
       return `http://127.0.0.1:3000${cleanEndpoint}`;
     }
   }
-  return cleanEndpoint;
+  return `http://127.0.0.1:3000${cleanEndpoint}`;
 }
 
 export async function apiFetch(input: string, init?: RequestInit, maxRetries: number = 3, retryDelayMs: number = 400): Promise<Response> {
@@ -34,3 +38,4 @@ export async function apiFetch(input: string, init?: RequestInit, maxRetries: nu
     await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
   }
 }
+

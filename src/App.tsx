@@ -139,7 +139,7 @@ export default function App() {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch('/api/downloads');
+        const res = await apiFetch('/api/downloads');
         const data = await res.json();
         
         setTasks((prevTasks) => {
@@ -251,7 +251,7 @@ export default function App() {
     });
 
     try {
-      await fetch('/api/downloads', {
+      await apiFetch('/api/downloads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -271,19 +271,19 @@ export default function App() {
 
   const handlePauseTask = async (id: string) => {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: 'paused' } : t)));
-    await fetch(`/api/downloads/${id}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'pause' }) }).catch(() => {});
+    await apiFetch(`/api/downloads/${id}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'pause' }) }).catch(() => {});
   };
 
   const handleResumeTask = async (id: string) => {
     setTasks((prev) => prev.map((t) => t.id === id ? { ...t, status: effectiveOnline ? 'downloading' : 'waiting_reconnect' } : t));
-    await fetch(`/api/downloads/${id}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'resume' }) }).catch(() => {});
+    await apiFetch(`/api/downloads/${id}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'resume' }) }).catch(() => {});
   };
 
   const handleRemoveTask = async (id: string) => {
     const task = tasks.find(t => t.id === id);
     setTasks((prev) => prev.filter((t) => t.id !== id));
     toast.success('Task Removed', { description: task ? task.title : 'The game was removed from the list' });
-    await fetch(`/api/downloads/${id}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'cancel' }) }).catch(() => {});
+    await apiFetch(`/api/downloads/${id}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'cancel' }) }).catch(() => {});
   };
 
   const handleAcceptUpdate = () => {

@@ -62,7 +62,7 @@ export const SearchScraperView: React.FC<SearchScraperViewProps> = ({ onStartDow
 
     gamesWithoutCover.slice(0, 10).forEach(async (game) => {
       try {
-        const res = await fetch(`/api/fitgirl/details?siteUrl=${encodeURIComponent(game.siteUrl)}`);
+        const res = await apiFetch(`/api/fitgirl/details?siteUrl=${encodeURIComponent(game.siteUrl)}`);
         if (res.ok) {
           const data = await res.json();
           if (data.cover) {
@@ -476,7 +476,7 @@ export const SearchScraperView: React.FC<SearchScraperViewProps> = ({ onStartDow
                       const targetTime = new Date(scheduledTimeString).getTime();
                       if (targetTime <= Date.now()) return alert('Scheduled time must be in the future.');
                       
-                      fetch('/api/downloads/schedule', {
+                      apiFetch('/api/downloads/schedule', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

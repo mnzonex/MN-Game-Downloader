@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { MessageSquare, ExternalLink, Cpu, CheckCircle, Code, RefreshCw, Sparkles } from 'lucide-react';
 import { AppVersionInfo } from '../types';
+import { apiFetch } from '../services/api';
 
 interface AboutAndSupportViewProps {
   versionInfo: AppVersionInfo | null;
@@ -19,7 +20,7 @@ export const AboutAndSupportView: React.FC<AboutAndSupportViewProps> = ({
   const handleCheckUpdate = async () => {
     setIsCheckingUpdate(true);
     try {
-      const res = await fetch('/api/version');
+      const res = await apiFetch('/api/version');
       const data = await res.json();
       
       if (data.isUpdateAvailable) {
