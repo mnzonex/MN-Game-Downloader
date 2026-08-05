@@ -116,23 +116,32 @@ function createWindow() {
     mainWindow.focus();
   });
 
-  let retryTimer = null;
-  const loadApp = () => {
-    mainWindow.loadURL('http://127.0.0.1:3000').catch((err) => {
-      console.log('[Main Process] Waiting for server at http://127.0.0.1:3000...', err?.message || err);
+  // --- Loading Logic ---
+  if (app.isPackaged) {
+    // PRODUCTION (Build EXE): Load index.html directly from dist
+    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html')).catch(err => {
+      console.error('[Main Process] Failed to load HTML:', err);
+    });
+  } else {
+    // DEV MODE: Load from local dev server
+    let retryTimer = null;
+    const loadApp = () => {
+      mainWindow.loadURL('http://127.0.0.1:3000').catch((err) => { 
+        console.log('[Main Process] Waiting for dev server...', err?.message || err);
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(loadApp, 500);
+      });
+    };
+
+    // Retry if load fails
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+      console.log(`[Main Process] Page load deferred (${errorCode}: ${errorDescription}), retrying...`);
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = setTimeout(loadApp, 500);
     });
-  };
 
-  // If page fails to load (e.g. server starting up), retry HTTP load after 500ms
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.log(`[Main Process] Page load deferred (${errorCode}: ${errorDescription}), retrying in 500ms...`);
-    if (retryTimer) clearTimeout(retryTimer);
-    retryTimer = setTimeout(loadApp, 500);
-  });
-
-  loadApp();
+    loadApp();
+  }
 
   mainWindow.on('closed', function () {
     mainWindow = null;

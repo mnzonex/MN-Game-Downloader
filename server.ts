@@ -8,9 +8,16 @@ import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { fetchFitGirlPopular, searchFitGirl, fetchFitGirlGameDetails } from './src/scrapers/fitgirl';
 
-// Fix ESM path resolution for Node / Windows
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Fix CJS and ESM path resolution for Node / Windows / Electron
+const safeFilename = typeof __filename !== 'undefined'
+  ? __filename
+  : (typeof import.meta !== 'undefined' && import.meta.url ? fileURLToPath(import.meta.url) : '');
+const safeDirname = typeof __dirname !== 'undefined'
+  ? __dirname
+  : (safeFilename ? path.dirname(safeFilename) : process.cwd());
+
+const __filename_resolved = safeFilename;
+const __dirname_resolved = safeDirname;
 
 const sanitizeFolderName = (name: string) => name.replace(/[^\w\s-]/g, '').trim() || 'Game';
 
@@ -573,10 +580,11 @@ function finishDownloadTask(task: DownloadTask, setupExePath: string) {
 }
 
 function serveStaticFallback(app: express.Express) {
-  const distPath = fs.existsSync(path.resolve(__dirname, 'dist', 'index.html'))
-    ? path.resolve(__dirname, 'dist')
-    : (fs.existsSync(path.resolve(__dirname, 'index.html'))
-      ? __dirname
+  const baseDir = safeDirname || process.cwd();
+  const distPath = fs.existsSync(path.resolve(baseDir, 'dist', 'index.html'))
+    ? path.resolve(baseDir, 'dist')
+    : (fs.existsSync(path.resolve(baseDir, 'index.html'))
+      ? baseDir
       : path.resolve(process.cwd(), 'dist'));
 
   console.log(`[Server] Serving static frontend from: ${distPath}`);
