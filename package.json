@@ -1,0 +1,60 @@
+{
+  "name": "mn-game-downloader",
+  "description": "MN Game Downloader - Fast PC Game Downloader & Library Manager",
+  "author": "MN ZONEX Dev",
+  "private": true,
+  "version": "1.2.5",
+  "type": "module",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "npm run build && node dist/server.cjs",
+    "clean": "rm -rf dist server.cjs",
+    "electron:dev": "concurrently --kill-others-on-fail -n DEV,APP \"npm run dev\" \"wait-on tcp:3000 && electron main.cjs\"",
+    "electron:build": "npm run engine:build && npm run build && electron-builder",
+    "app:build": "npm run electron:build",
+    "dist:win": "npm run engine:build && npm run build && electron-builder --win nsis",
+    "engine:build": "node scripts/build-engine.cjs"
+  },
+  "dependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/better-sqlite3": "^9.6.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "axios": "^1.18.1",
+    "better-sqlite3": "^13.0.3",
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "electron-updater": "^6.8.9",
+    "express": "^4.21.2",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "sonner": "^2.0.7",
+    "vite": "^6.2.3",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^10.0.4",
+    "cross-env": "^10.1.0",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3",
+    "wait-on": "^9.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnzonex/MN-Game-Downloader.git"
+  }
+}

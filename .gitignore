@@ -1,0 +1,43 @@
+# JavaScript dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+release/
+release-*/
+release-upgrade/
+*.blockmap
+*.asar
+*.map
+
+# Python / native engine build output
+.engine-deps/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+bin/*.exe
+*.pyd
+
+# Local app data, test fixtures and upgrade backups
+.mn-data/
+.test-data/
+.upgrade-backup/
+.upgrade-backup-v2/
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Coverage and test reports
+coverage/
+test-results/
+playwright-report/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

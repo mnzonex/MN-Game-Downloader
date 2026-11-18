@@ -1,0 +1,32 @@
+appId: com.mnzonex.gamedownloader
+productName: MN Game Downloader
+artifactName: "MN-Game-Downloader-Setup.${ext}"
+directories:
+  output: release
+files:
+  - dist/**/*
+  - main.cjs
+  - desktop-actions.cjs
+  - installed-games.cjs
+  - preload.cjs
+  - package.json
+  - icon.ico
+  - icon.png
+  - node_modules/better-sqlite3/**/*
+extraResources:
+  - bin/engine.exe
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
+win:
+  target: nsis
+  icon: icon.ico
+nsis:
+  oneClick: false
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "MN Game Downloader"
+publish:
+  provider: github
+  owner: mnzonex
+  repo: MN-Game-Downloader

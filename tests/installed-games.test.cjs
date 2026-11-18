@@ -1,0 +1,18 @@
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const { resolveInstalledGame } = require('../installed-games.cjs');
+const root = path.resolve('.test-data', 'installed-' + Date.now());
+fs.mkdirSync(root, { recursive: true });
+for (const name of ['game.exe', 'setup.exe', 'other.exe']) fs.writeFileSync(path.join(root, name), 'fixture');
+const game = { name: 'Control: Deluxe Edition [FitGirl Repack]', installer: path.join(root, 'setup.exe') };
+const record = { DisplayName: 'Control', InstallLocation: root, DisplayIcon: '"' + path.join(root, 'game.exe') + '",0' };
+assert.equal(resolveInstalledGame(game, [record]), path.join(root, 'game.exe'));
+assert.equal(resolveInstalledGame(game, [{ ...record, DisplayName: 'Unrelated Game' }]), null);
+assert.equal(resolveInstalledGame(game, [{ ...record, DisplayName: 'Control Resonant' }]), null, 'never link a different sequel');
+assert.equal(resolveInstalledGame(game, [{ ...record, DisplayIcon: path.join(root, 'setup.exe') }]), null);
+assert.equal(resolveInstalledGame(game, [{ ...record, DisplayIcon: path.join(root, 'missing.exe') }]), null);
+assert.equal(resolveInstalledGame(game, [record, { ...record, DisplayIcon: path.join(root, 'other.exe') }]), null);
+assert.equal(resolveInstalledGame(game, [{ ...record, InstallLocation: path.join(root, 'different') }]), null);
+assert.equal(resolveInstalledGame(game, [{ ...record, DisplayIcon: path.join(root, 'game.exe') + ' --uninstall' }]), null);
+console.log('Installed-game discovery tests passed: title matching, actual executable, installer exclusion, ambiguity, location and command rejection.');
