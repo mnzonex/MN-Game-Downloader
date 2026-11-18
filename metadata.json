@@ -1,6 +1,0 @@
-{
-  "name": "MN Game Downloader",
-  "description": "FitGirl Repacks exclusive game downloader and scraper with dedicated FuckingFast filehoster parsing, ad-bypass resolution, multi-part queue tracking, sandboxed AppData storage, and smart library launcher.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
