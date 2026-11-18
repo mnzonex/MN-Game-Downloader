@@ -1,0 +1,8 @@
+version: 1.2.5
+files:
+  - url: MN-Game-Downloader-Setup.exe
+    sha512: PPExHNoAvjKtLhPJRCLe/08mEtggjSnmrP8qWjYGUdBHVt74NjpjYys9OcetjP+p3dYL7k4n1s2d12/72sOLWg==
+    size: 135986588
+path: MN-Game-Downloader-Setup.exe
+sha512: PPExHNoAvjKtLhPJRCLe/08mEtggjSnmrP8qWjYGUdBHVt74NjpjYys9OcetjP+p3dYL7k4n1s2d12/72sOLWg==
+releaseDate: '2026-10-22T08:17:12.729Z'

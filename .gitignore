@@ -4,10 +4,12 @@ node_modules/
 # Build output
 dist/
 build/
-release/
+release/*
+!release/README.md
+!release/latest.yml
+!release/*.blockmap
 release-*/
 release-upgrade/
-*.blockmap
 *.asar
 *.map
 
