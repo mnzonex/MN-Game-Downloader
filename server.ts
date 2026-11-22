@@ -140,7 +140,7 @@ async function startServer() {
 
   // API: Version Check & Update Enforcement
   app.get('/api/version', async (req, res) => {
-    let currentVersion = process.env.MN_APP_VERSION || '1.2.31';
+    let currentVersion = process.env.MN_APP_VERSION || '1.2.32';
     try {
       const pathsToCheck = [
         path.join(process.cwd(), 'package.json'),
@@ -624,7 +624,8 @@ async function startServer() {
     try {
       const { id, deleteFiles } = req.body;
       const row = dbGetTorrent(id);
-      if (row && row.status !== 'completed') captureTrackedEvent('download_cancelled', row);
+      const cancellableStatuses = new Set(['scheduled', 'queued', 'downloading', 'paused']);
+      if (row && cancellableStatuses.has(row.status)) captureTrackedEvent('download_cancelled', row);
       if (row && (row.magnet.startsWith('http') || row.id.length > 40)) {
         await httpEngine.remove(id, !!deleteFiles);
       } else {

@@ -7,6 +7,7 @@ const main = fs.readFileSync(path.join(root, "main.cjs"), "utf8");
 const settings = fs.readFileSync(path.join(root, "src", "components", "SettingsView.tsx"), "utf8");
 const preload = fs.readFileSync(path.join(root, "preload.cjs"), "utf8");
 const core = fs.readFileSync(path.join(root, "analytics-core.cjs"), "utf8");
+const server = fs.readFileSync(path.join(root, "server.ts"), "utf8");
 
 assert.match(main, /defaultOptIn:\s*true/, "desktop analytics must initialize as always-on");
 assert.match(main, /async function startAnalytics\(/, "analytics should start with app startup");
@@ -19,5 +20,8 @@ assert.match(settings, /solely to understand how MN Game Downloader is used and 
 assert.match(core, /magnet:/, "the analytics sanitizer must filter magnet links");
 assert.match(core, /https\?:\\\/\\\//, "the analytics sanitizer must filter download URLs");
 assert.match(core, /error_category/, "analytics must use categorized errors, not raw error details");
+assert.match(server, /const cancellableStatuses = new Set\(\[\x27scheduled\x27, \x27queued\x27, \x27downloading\x27, \x27paused\x27\]\)/, "only active downloads should count as cancellations");
+assert.match(server, /cancellableStatuses\.has\(row\.status\).*download_cancelled/, "deleting failed rows must not count as cancellations");
+assert.doesNotMatch(server, /row && row\.status !== \x27completed\x27\) captureTrackedEvent\(\x27download_cancelled\x27/, "failed records must not be counted as cancelled");
 
-console.log("Analytics policy tests passed: always-on startup, no toggle, clear disclosure and privacy filtering.");
+console.log("Analytics policy tests passed: always-on startup, no toggle, clear disclosure, privacy filtering and accurate cancellation counts.");

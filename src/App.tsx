@@ -17,7 +17,7 @@ import { LibraryView } from './components/LibraryView';
 import { SystemHealthView } from './components/SystemHealthView';
 import { PerformanceBoostView, type PerformanceMode } from './components/PerformanceBoostView';
 
-const APP_VERSION = '1.2.31';
+const APP_VERSION = '1.2.32';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('search');

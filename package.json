@@ -3,7 +3,7 @@
   "description": "MN Game Downloader - Fast PC Game Downloader & Library Manager",
   "author": "MN ZONEX Dev",
   "private": true,
-  "version": "1.2.31",
+  "version": "1.2.32",
   "type": "module",
   "main": "main.cjs",
   "scripts": {
