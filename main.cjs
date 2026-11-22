@@ -18,7 +18,10 @@ function captureAnalytics(eventName, properties) {
   const safeEvent = sanitizeAnalyticsEvent(eventName, properties);
   if (!safeEvent) return false;
   try {
-    posthogClient.capture(safeEvent.event, safeEvent.properties);
+    posthogClient.capture(safeEvent.event, {
+      ...safeEvent.properties,
+      app_version: app.getVersion(),
+    });
     return true;
   } catch {
     return false;
@@ -36,7 +39,7 @@ async function ensurePostHogClient() {
     const client = init({
       projectToken: posthogConfig.projectToken,
       host: posthogConfig.host,
-      defaultOptIn: false,
+      defaultOptIn: true,
       personProfiles: 'never',
       disableGeoip: true,
       disableRemoteFeatureFlags: true,
@@ -60,41 +63,22 @@ async function ensurePostHogClient() {
   return posthogInitPromise;
 }
 
-async function setAnalyticsEnabled(enabled, recordLaunch = false) {
-  if (!enabled) {
-    analyticsEnabled = false;
-    if (posthogClient) {
-      try { await posthogClient.optOut(); } catch {}
-    }
-    return { enabled: false };
-  }
-  const client = await ensurePostHogClient();
-  await client.optIn();
-  analyticsEnabled = true;
-  if (recordLaunch) {
+async function startAnalytics() {
+  try {
+    const client = await ensurePostHogClient();
+    await client.optIn();
+    analyticsEnabled = true;
     captureAnalytics('app_launched', {
       app_version: app.getVersion(),
       platform: process.platform,
       arch: process.arch,
       electron_version: process.versions.electron,
     });
-  }
-  return { enabled: true };
-}
-
-async function restoreAnalyticsConsent() {
-  try {
-    const response = await fetch('http://127.0.0.1:3000/api/settings', {
-      headers: { 'X-MN-API-Token': process.env.MN_API_TOKEN },
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!response.ok) return;
-    const settings = await response.json();
-    if (settings.analytics_enabled === '1') {
-      await setAnalyticsEnabled(true, true);
-    }
+    return { enabled: true };
   } catch (error) {
-    console.warn('[Analytics] Could not restore local consent preference; tracking remains inactive.');
+    analyticsEnabled = false;
+    console.warn('[Analytics] Analytics could not start; the app will continue normally.');
+    return { enabled: false };
   }
 }
 
@@ -158,12 +142,6 @@ ipcMain.handle('api:get-token', (event) => {
     throw new Error('API access is only available to the MN Game Downloader window.');
   }
   return process.env.MN_API_TOKEN;
-});
-
-ipcMain.handle('analytics:set-consent', async (event, enabled) => {
-  if (!isTrustedAppSender(event)) throw new Error('Analytics settings are only available to the MN Game Downloader window.');
-  if (typeof enabled !== 'boolean') throw new Error('A valid analytics consent value is required.');
-  return setAnalyticsEnabled(enabled, false);
 });
 
 ipcMain.handle('analytics:capture', (event, eventName, properties) => {
@@ -530,7 +508,7 @@ app.on('ready', async () => {
     // In development the concurrently-started server owns this port; packaged builds start it here.
     if (app.isPackaged) startServer();
     await waitForApiHealth();
-    await restoreAnalyticsConsent();
+    await startAnalytics();
     createWindow();
   } catch (error) {
     console.error('[Main] Local API did not become ready:', error);

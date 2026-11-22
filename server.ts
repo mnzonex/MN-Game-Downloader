@@ -140,7 +140,7 @@ async function startServer() {
 
   // API: Version Check & Update Enforcement
   app.get('/api/version', async (req, res) => {
-    let currentVersion = process.env.MN_APP_VERSION || '1.2.30';
+    let currentVersion = process.env.MN_APP_VERSION || '1.2.31';
     try {
       const pathsToCheck = [
         path.join(process.cwd(), 'package.json'),
@@ -676,7 +676,7 @@ async function startServer() {
       const settings = req.body as Record<string, unknown>;
       const allowedKeys = new Set([
         'download_path', 'speed_limit', 'max_download_speed', 'max_upload_speed',
-        'port_range', 'seed_after_done', 'appearance', 'analytics_enabled',
+        'port_range', 'seed_after_done', 'appearance',
       ]);
       const entries = Object.entries(settings);
       if (entries.length === 0 || entries.length > allowedKeys.size) {
@@ -706,9 +706,6 @@ async function startServer() {
         }
         if (key === 'appearance' && !['light', 'dark'].includes(value)) {
           return res.status(400).json({ error: 'Appearance must be light or dark.' });
-        }
-        if (key === 'analytics_enabled' && !['0', '1'].includes(value)) {
-          return res.status(400).json({ error: 'Analytics consent must be 0 or 1.' });
         }
       }
 

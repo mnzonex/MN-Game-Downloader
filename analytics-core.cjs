@@ -1,4 +1,8 @@
 const SOURCE_IDS = new Set(["fitgirl", "erolabs", "gog", "steam", "epic"]);
+const FEATURE_IDS = new Set(["search", "universal", "library", "downloads", "boost", "health", "settings", "about", "game_search", "game_details"]);
+const SEARCH_SCOPES = new Set(["all_sources", "single_source"]);
+const DOWNLOAD_TYPES = new Set(["torrent", "http"]);
+const ERROR_CATEGORIES = new Set(["disk_space", "permission", "network", "source_unavailable", "verification", "cancelled", "engine"]);
 const EVENT_PROPERTIES = Object.freeze({
   app_launched: ["app_version", "platform", "arch", "electron_version"],
   feature_used: ["feature"],
@@ -23,6 +27,16 @@ function safeText(value, maxLength = 120) {
   return text;
 }
 
+function safeGameTitle(value) {
+  const text = safeText(value, 120);
+  if (!text) return undefined;
+  if (/[\\/]/.test(text) || /@/.test(text)) return undefined;
+  if (/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i.test(text)) return undefined;
+  if (/\+?\d[\d\s().-]{7,}\d/.test(text)) return undefined;
+  if (/\.(exe|dll|lnk|bat|cmd|zip|rar|7z|iso|torrent|url)$/i.test(text)) return undefined;
+  return text;
+}
+
 function safeInteger(value, max = Number.MAX_SAFE_INTEGER) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return undefined;
@@ -37,9 +51,24 @@ function sanitizeAnalyticsEvent(eventName, properties = {}) {
     const value = properties[key];
     if (key === "source_id") {
       if (typeof value === "string" && SOURCE_IDS.has(value)) result[key] = value;
-    } else if (key === "game_name" || key === "feature" || key === "platform" || key === "arch" || key === "electron_version" || key === "app_version" || key === "download_type" || key === "search_scope" || key === "error_category") {
-      const text = safeText(value, key === "game_name" ? 120 : 48);
-      if (text && (!key.endsWith("_version") || /^[0-9A-Za-z.+-]{1,48}$/.test(text))) result[key] = text;
+    } else if (key === "game_name") {
+      const title = safeGameTitle(value);
+      if (title) result[key] = title;
+    } else if (key === "feature") {
+      if (typeof value === "string" && FEATURE_IDS.has(value)) result[key] = value;
+    } else if (key === "search_scope") {
+      if (typeof value === "string" && SEARCH_SCOPES.has(value)) result[key] = value;
+    } else if (key === "download_type") {
+      if (typeof value === "string" && DOWNLOAD_TYPES.has(value)) result[key] = value;
+    } else if (key === "error_category") {
+      if (typeof value === "string" && ERROR_CATEGORIES.has(value)) result[key] = value;
+    } else if (key === "platform") {
+      if (value === "win32" || value === "darwin" || value === "linux") result[key] = value;
+    } else if (key === "arch") {
+      if (value === "x64" || value === "arm64" || value === "ia32" || value === "arm") result[key] = value;
+    } else if (key === "electron_version" || key === "app_version") {
+      const text = safeText(value, 48);
+      if (text && /^[0-9A-Za-z.+-]{1,48}$/.test(text)) result[key] = text;
     } else if (key === "bytes" || key === "duration_ms") {
       const number = safeInteger(value, key === "duration_ms" ? 31536000000 : Number.MAX_SAFE_INTEGER);
       if (number !== undefined) result[key] = number;
@@ -61,4 +90,4 @@ function classifyDownloadError(message) {
   return "engine";
 }
 
-module.exports = { SOURCE_IDS, EVENT_PROPERTIES, sanitizeAnalyticsEvent, classifyDownloadError };
+module.exports = { SOURCE_IDS, FEATURE_IDS, EVENT_PROPERTIES, sanitizeAnalyticsEvent, classifyDownloadError };

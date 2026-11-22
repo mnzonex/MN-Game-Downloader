@@ -114,14 +114,10 @@ async function run() {
     assert.equal(combined.body.speed_limit, "5242880", "speed settings must persist");
     assert.equal(combined.body.appearance, "light", "partial updates must preserve unrelated settings");
 
-    const analyticsOn = await request(port, "POST", "/api/settings", { analytics_enabled: "1" });
-    assert.equal(analyticsOn.status, 200, "explicit analytics opt-in should be accepted");
-    assert.equal((await request(port, "GET", "/api/settings")).body.analytics_enabled, "1", "analytics consent must persist locally");
-    const analyticsOff = await request(port, "POST", "/api/settings", { analytics_enabled: "0" });
-    assert.equal(analyticsOff.status, 200, "analytics opt-out should be accepted");
-    assert.equal((await request(port, "GET", "/api/settings")).body.analytics_enabled, "0", "analytics opt-out must persist locally");
-    const invalidAnalyticsConsent = await request(port, "POST", "/api/settings", { analytics_enabled: "true" });
-    assert.equal(invalidAnalyticsConsent.status, 400, "invalid analytics consent values must be rejected");
+    const analyticsSettings = await request(port, "GET", "/api/settings");
+    assert.equal(analyticsSettings.body.analytics_enabled, undefined, "analytics is not a user-editable setting");
+    const legacyAnalyticsToggle = await request(port, "POST", "/api/settings", { analytics_enabled: "0" });
+    assert.equal(legacyAnalyticsToggle.status, 400, "the retired analytics toggle must be rejected");
 
     const invalidAppearance = await request(port, "POST", "/api/settings", { appearance: "blue" });
     assert.equal(invalidAppearance.status, 400, "unknown theme values must be rejected");

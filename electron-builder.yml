@@ -2,7 +2,7 @@ appId: com.mnzonex.gamedownloader
 productName: MN Game Downloader
 artifactName: "MN-Game-Downloader-Setup.${ext}"
 directories:
-  output: release-v1.2.30
+  output: release-v1.2.31
 files:
   - dist/**/*
   - main.cjs
@@ -13,6 +13,7 @@ files:
   - system-health-metrics.cjs
   - preload.cjs
   - package.json
+  - PRIVACY.md
   - icon.ico
   - icon.png
   - node_modules/better-sqlite3/**/*

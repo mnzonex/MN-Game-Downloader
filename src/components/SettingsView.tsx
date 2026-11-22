@@ -32,7 +32,6 @@ const speedOptions = [
 const defaultSettings: Partial<DownloadSettings> = {
   download_path: "",
   speed_limit: "0",
-  analytics_enabled: "0",
 };
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -98,7 +97,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         if (!active) return;
         const knownKeys: (keyof DownloadSettings)[] = [
           "download_path", "port_range", "max_download_speed", "max_upload_speed",
-          "seed_after_done", "speed_limit", "appearance", "analytics_enabled",
+          "seed_after_done", "speed_limit", "appearance",
         ];
         const known = Object.fromEntries(
           knownKeys.filter((key) => typeof value?.[key] === "string")
@@ -159,39 +158,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       }
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : "The folder picker could not be opened.");
-    }
-  };
-
-  const handleAnalyticsConsent = async (enabled: boolean) => {
-    const analytics = (window as any).electron?.analytics;
-    if (typeof analytics?.setConsent !== "function") {
-      toast.error("Analytics controls are only available in the desktop app.");
-      return;
-    }
-    const previous = settings.analytics_enabled === "1";
-    setSettings((current) => ({ ...current, analytics_enabled: enabled ? "1" : "0" }));
-    setSaveState("saving");
-    setSaveError("");
-    try {
-      // Turn capture off immediately on opt-out; enable only after the local preference is saved.
-      if (!enabled) await analytics.setConsent(false);
-      await saveSettings({ analytics_enabled: enabled ? "1" : "0" });
-      if (enabled) await analytics.setConsent(true);
-      lastSavedRef.current = { ...lastSavedRef.current, analytics_enabled: enabled ? "1" : "0" };
-      setSaveState("saved");
-      setSaveError("");
-      toast.success(enabled ? "Anonymous usage analytics enabled" : "Analytics disabled");
-    } catch (error: unknown) {
-      if (enabled) {
-        try { await analytics.setConsent(false); } catch {}
-        try { await saveSettings({ analytics_enabled: "0" }); } catch {}
-        setSettings((current) => ({ ...current, analytics_enabled: "0" }));
-      } else {
-        setSettings((current) => ({ ...current, analytics_enabled: "0" }));
-      }
-      setSaveState("error");
-      setSaveError(error instanceof Error ? error.message : "Analytics preference could not be saved.");
-      if (previous && !enabled) toast.error("Analytics was turned off for this session, but its saved preference needs retrying.");
     }
   };
 
@@ -288,21 +254,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="mn-setting-row">
                   <div className="mn-setting-icon blue"><Info className="w-5 h-5" /></div>
                   <div className="mn-setting-copy">
-                    <h3>Share anonymous usage analytics</h3>
-                    <p>Help improve MN Game Downloader by sharing app usage, game source and download outcome statistics. This is optional and off by default.</p>
+                    <h3>Anonymous usage analytics</h3>
+                    <p>We collect anonymous app usage analytics solely to understand how MN Game Downloader is used and improve its features and reliability.</p>
                   </div>
-                  <label className="flex items-center gap-2 text-sm font-semibold">
-                    <input
-                      type="checkbox"
-                      className="h-5 w-5 accent-emerald-600"
-                      checked={settings.analytics_enabled === "1"}
-                      onChange={(event) => void handleAnalyticsConsent(event.target.checked)}
-                      aria-label="Share anonymous usage analytics"
-                    />
-                    <span>{settings.analytics_enabled === "1" ? "On" : "Off"}</span>
-                  </label>
+                  <span className="mn-static-value">Always on</span>
                 </div>
-                <div className="mn-settings-note"><Info className="w-4 h-4" /> When enabled, events include app version, feature use, game title, provider, download result, size and duration. Magnet links, download URLs, file names, folders, personal details and raw error messages are not sent. Events are queued on this PC while offline and sent after connection returns.</div>
+                <div className="mn-settings-note"><Info className="w-4 h-4" /> This includes app launches, feature usage, selected game sources, game titles and download outcomes. We do not send magnet links, download URLs, local file paths, usernames or raw error messages. Events are saved locally while offline and sent when the internet connection returns.</div>
                 <div className="mn-setting-row">
                   <div className="mn-setting-icon neutral"><Settings2 className="w-5 h-5" /></div>
                   <div className="mn-setting-copy">
@@ -367,7 +324,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </section>
         </div>
 
-        <footer className="mn-settings-footer">Your preferences stay on this PC. No account is required.</footer>
+        <footer className="mn-settings-footer">Downloads, Library data and preferences stay on this PC. No account is required.</footer>
       </div>
     </div>
   );

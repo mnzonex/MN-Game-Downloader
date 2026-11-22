@@ -89,13 +89,13 @@ function initSchema(db: Database.Database) {
     max_upload_speed:   '0',
     port_range:         '6881-6891',
     seed_after_done:    '0',   // 0 = no seeding (stop & remove after move)
-    analytics_enabled:  '0',   // opt-in only; analytics disabled by default
   };
 
   const insert = db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`);
   for (const [k, v] of Object.entries(defaultSettings)) insert.run(k, v);
 
-
+  // Remove the retired opt-in flag: analytics now runs automatically with an in-app disclosure.
+  db.prepare(`DELETE FROM settings WHERE key = 'analytics_enabled'`).run();
 }
 
 function getDefaultDownloadPath(): string {

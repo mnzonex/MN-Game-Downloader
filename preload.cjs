@@ -17,7 +17,6 @@ contextBridge.exposeInMainWorld('electron', {
   // Per-launch API credential; only the trusted app window can request it.
   getApiToken: () => ipcRenderer.invoke('api:get-token'),
   analytics: {
-    setConsent: (enabled) => ipcRenderer.invoke('analytics:set-consent', enabled),
     capture: (eventName, properties) => ipcRenderer.invoke('analytics:capture', eventName, properties),
   },
   getSystemHealth: () => ipcRenderer.invoke('system:get-health'),

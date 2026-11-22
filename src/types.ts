@@ -100,5 +100,4 @@ export interface DownloadSettings {
   seed_after_done: string;
   speed_limit?: string;
   appearance?: "light" | "dark";
-  analytics_enabled?: "0" | "1";
 }

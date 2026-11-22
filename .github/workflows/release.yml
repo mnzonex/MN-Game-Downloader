@@ -9,6 +9,19 @@ on:
     paths:
       - 'package.json'
       - 'package-lock.json'
+      - '.github/workflows/release.yml'
+      - 'main.cjs'
+      - 'preload.cjs'
+      - 'server.ts'
+      - 'analytics-core.cjs'
+      - 'posthog-config.cjs'
+      - 'src/**'
+      - 'tests/**'
+      - 'engine.py'
+      - 'engine.spec'
+      - 'engine-requirements.txt'
+      - 'electron-builder.yml'
+      - 'PRIVACY.md'
   workflow_dispatch:
 
 permissions:
@@ -52,5 +65,5 @@ jobs:
 
       - name: Build the application and publish the GitHub release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: npm run build && npx electron-builder --win nsis --publish always

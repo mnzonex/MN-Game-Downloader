@@ -31,7 +31,7 @@ function makeClient() {
     projectToken: 'phc_offline_queue_test_only',
     host,
     storageDirectory,
-    defaultOptIn: false,
+    defaultOptIn: true,
     personProfiles: 'never',
     disableGeoip: true,
     disableRemoteFeatureFlags: true,
@@ -62,19 +62,18 @@ app.whenReady().then(async () => {
 
     const first = makeClient();
     await first.ready();
-    const defaultOptedOut = first.hasOptedOutCapturing();
+    const optedOutByDefault = first.hasOptedOutCapturing();
     safeCapture(first, 'feature_used', { feature: 'settings' });
-    await new Promise(resolve => setTimeout(resolve, 200));
-    const beforeConsentCount = readQueue().length;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const beforeShutdown = readQueue();
 
-    await first.optIn();
     safeCapture(first, 'download_started', {
       game_name: 'Offline Queue Test Game',
       source_id: 'fitgirl',
       download_type: 'torrent',
       scheduled: false,
       magnet: 'magnet:?secret=must-not-persist',
-      file_path: 'C:\\\\private\\\\path',
+      file_path: 'C:\\private\\path',
     });
     await new Promise(resolve => setTimeout(resolve, 250));
     await first.flush().catch(() => {});
@@ -101,18 +100,19 @@ app.whenReady().then(async () => {
     const eventNames = afterSecondRun.map(item => item.message.event);
     const serialized = JSON.stringify(afterSecondRun);
     report = {
-      ok: defaultOptedOut
-        && beforeConsentCount === 0
-        && afterFirstRun.length >= 1
-        && restoredCount >= 1
-        && afterSecondRun.length >= 2
+      ok: optedOutByDefault === false
+        && beforeShutdown.some(item => item.message.event === 'feature_used')
+        && afterFirstRun.some(item => item.message.event === 'download_started')
+        && restoredCount >= 2
+        && afterSecondRun.length >= 3
+        && eventNames.includes('feature_used')
         && eventNames.includes('download_started')
         && eventNames.includes('download_completed')
         && !serialized.includes('must-not-persist')
         && !serialized.includes('magnet:?')
         && !serialized.includes('private\\\\path'),
-      defaultConsentOff: defaultOptedOut,
-      eventsBeforeConsent: beforeConsentCount,
+      defaultOptOut: optedOutByDefault,
+      queuedWithoutAnyConsentAction: beforeShutdown.length,
       persistedAfterFirstShutdown: afterFirstRun.length,
       restoredOnSecondClientStart: restoredCount,
       persistedAfterSecondShutdown: afterSecondRun.length,
@@ -124,13 +124,13 @@ app.whenReady().then(async () => {
       note: 'All requests targeted localhost port 65534, where no service is listening.'
     };
     fs.writeFileSync(resultFile, JSON.stringify(report, null, 2));
-    process.stdout.write(JSON.stringify(report, null, 2) + '\\n');
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
     if (!report.ok) process.exitCode = 2;
   } catch (error) {
     report.ok = false;
     report.error = String(error && error.stack || error);
     fs.writeFileSync(resultFile, JSON.stringify(report, null, 2));
-    process.stderr.write(report.error + '\\n');
+    process.stderr.write(report.error + '\n');
     process.exitCode = 1;
   } finally {
     app.quit();
