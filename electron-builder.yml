@@ -34,3 +34,4 @@ publish:
   provider: github
   owner: mnzonex
   repo: MN-Game-Downloader
+  releaseType: release
