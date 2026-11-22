@@ -53,7 +53,7 @@ const StatusBadge: React.FC<{ torrent: TorrentInfo }> = ({ torrent }) => {
   const Icon = cfg.icon;
 
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold ${cfg.classes}`}>
+    <span className={`mn-download-status mn-download-status-${status} inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold ${cfg.classes}`}>
       <Icon className={`w-2.5 h-2.5 ${status === 'moving' || status === 'verifying' || status === 'repairing' ? 'animate-spin' : ''}`} />
       {label}
     </span>
@@ -75,7 +75,7 @@ const ProgressBar: React.FC<{ progress: number; status: TorrentStatus }> = ({ pr
   };
 
   return (
-    <div className="relative w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+    <div className="mn-download-progress-track relative w-full h-2 bg-slate-100 rounded-full overflow-hidden">
       <div
         className={`h-full rounded-full transition-all duration-500 ${colorMap[status] || 'bg-blue-500'} ${status === 'downloading' ? 'animate-none' : ''}`}
         style={{ width: `${pct}%` }}
@@ -105,15 +105,15 @@ const TorrentCard: React.FC<{
   const isReconnecting = isActive && torrent.progress > 0 && torrent.peers === 0 && torrent.downloadSpeed === 0;
 
   return (
-    <div className={`bg-white border rounded-2xl p-4 space-y-3 transition-all shadow-xs relative overflow-hidden ${
-      isFailed ? 'border-red-200 bg-red-50/30' :
-      isMoving  ? 'border-purple-200 bg-purple-50/20' :
-      isScheduled ? 'border-indigo-200 bg-indigo-50/20' :
-      isQueued ? 'border-slate-200 bg-slate-50/40' :
+    <div className={`mn-download-card bg-white border rounded-2xl p-4 space-y-3 transition-all shadow-xs relative overflow-hidden ${
+      isFailed ? 'is-failed border-red-200 bg-red-50/30' :
+      isMoving  ? 'is-moving border-purple-200 bg-purple-50/20' :
+      isScheduled ? 'is-scheduled border-indigo-200 bg-indigo-50/20' :
+      isQueued ? 'is-queued border-slate-200 bg-slate-50/40' :
       'border-slate-200 hover:border-slate-300'
     }`}>
       {isReconnecting && (
-        <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center pointer-events-none">
+        <div className="mn-download-reconnect-overlay absolute inset-0 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center pointer-events-none">
           <div className="bg-slate-800 text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg flex items-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
             Reconnecting / Finding peers...
@@ -128,7 +128,7 @@ const TorrentCard: React.FC<{
             {torrent.name || 'Fetching torrent info...'}
           </p>
           <div className="flex items-center gap-2 mt-1">
-            {torrent.taskKind === 'repair' && <span className="text-xs font-bold text-orange-700 bg-orange-50 px-2 py-1 rounded-lg">Repair download</span>}
+            {torrent.taskKind === 'repair' && <span className="mn-download-repair-chip text-xs font-bold text-orange-700 bg-orange-50 px-2 py-1 rounded-lg">Repair download</span>}
             <StatusBadge torrent={torrent} />
             {torrent.size > 0 && (
               <span className="text-[10px] text-slate-400 flex items-center gap-0.5">
@@ -200,7 +200,7 @@ const TorrentCard: React.FC<{
         </div>
       </div>
 
-      {torrent.taskKind === 'repair' && <details open className="rounded-xl bg-orange-50/40 p-3"><summary className="text-xs font-bold cursor-pointer">Repair file progress</summary><p className="text-[10px] text-slate-500 my-2">Files may receive pieces at the same time. Completion is confirmed after the final hash check.</p><div className="max-h-56 overflow-y-auto space-y-2">{torrent.files?.length ? torrent.files.map(file => <div key={file.name} className="text-xs border-b pb-2"><p className="break-all">{file.name}</p><div className="flex justify-between text-slate-500"><span>{formatSize(file.downloaded)} / {formatSize(file.size)}</span><span>{file.status}</span></div><progress className="w-full h-1.5" max={file.size || 1} value={file.downloaded} /></div>) : <p className="text-xs text-slate-500">Waiting for engine file progress…</p>}</div></details>}
+      {torrent.taskKind === 'repair' && <details open className="mn-download-repair-details rounded-xl bg-orange-50/40 p-3"><summary className="text-xs font-bold cursor-pointer">Repair file progress</summary><p className="text-[10px] text-slate-500 my-2">Files may receive pieces at the same time. Completion is confirmed after the final hash check.</p><div className="max-h-56 overflow-y-auto space-y-2">{torrent.files?.length ? torrent.files.map(file => <div key={file.name} className="text-xs border-b pb-2"><p className="break-all">{file.name}</p><div className="flex justify-between text-slate-500"><span>{formatSize(file.downloaded)} / {formatSize(file.size)}</span><span>{file.status}</span></div><progress className="w-full h-1.5" max={file.size || 1} value={file.downloaded} /></div>) : <p className="text-xs text-slate-500">Waiting for engine file progress…</p>}</div></details>}
       {/* Progress bar (only for active, paused, moving, failed) */}
       {!isScheduled && (
         <div className="space-y-1 relative z-0">
@@ -250,7 +250,7 @@ const TorrentCard: React.FC<{
 
       {/* Scheduled info banner */}
       {isScheduled && (
-        <div className="flex items-center justify-between text-[11px] pt-1 border-t border-indigo-100/80">
+        <div className="mn-download-scheduled-banner flex items-center justify-between text-[11px] pt-1 border-t border-indigo-100/80">
           <div className="flex items-center gap-1.5 text-indigo-700 font-medium">
             {torrent.scheduledAt && new Date(torrent.scheduledAt).getHours() === 0 && new Date(torrent.scheduledAt).getMinutes() === 0 ? (
               <Moon className="w-3.5 h-3.5 text-indigo-600 fill-current" />
@@ -295,15 +295,15 @@ const DeleteModal: React.FC<{
   onConfirm: (deleteFiles: boolean) => void;
   onCancel: () => void;
 }> = ({ item, onConfirm, onCancel }) => (
-  <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-    <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4 border border-slate-200">
+  <div className="mn-delete-download-backdrop fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div className="mn-delete-download-modal bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4 border border-slate-200">
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-red-50 border border-red-200 flex items-center justify-center">
+          <div className="mn-delete-download-icon w-10 h-10 rounded-xl bg-red-50 border border-red-200 flex items-center justify-center">
             <Trash2 className="w-5 h-5 text-red-500" />
           </div>
           <div>
-            <h3 className="font-extrabold text-slate-900 text-sm">Delete Download</h3>
+            <h3 className="mn-delete-download-title font-extrabold text-slate-900 text-sm">Delete Download</h3>
             <p className="text-xs text-slate-500 mt-0.5 truncate max-w-[180px]" title={item.name}>{item.name}</p>
           </div>
         </div>
@@ -312,20 +312,20 @@ const DeleteModal: React.FC<{
         </button>
       </div>
 
-      <p className="text-sm text-slate-600">
-        Remove this download from the list? You can also delete the partially downloaded files.
+      <p className="mn-delete-download-copy text-sm text-slate-600">
+        Remove this download from the list? “Delete files too” removes this task’s temporary download data only. It will not delete an older completed copy in your download folder.
       </p>
 
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={() => onConfirm(false)}
-          className="px-3 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+          className="mn-delete-download-remove-only px-3 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
         >
           Remove only
         </button>
         <button
           onClick={() => onConfirm(true)}
-          className="px-3 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-bold transition-colors"
+          className="mn-delete-download-delete-files px-3 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-bold transition-colors"
         >
           Delete files too
         </button>
@@ -358,7 +358,7 @@ const LiveSpeedGraph: React.FC<{ history: number[] }> = ({ history }) => {
 
 // ── Main DownloadsView ─────────────────────────────────────────────────────────
 
-export const DownloadsView: React.FC<{ onSuccessfulCompletion?: (kind: 'download' | 'repair') => void }> = ({ onSuccessfulCompletion }) => {
+export const DownloadsView: React.FC<{ active?: boolean; onSuccessfulCompletion?: (kind: 'download' | 'repair') => void }> = ({ active = true, onSuccessfulCompletion }) => {
   const [torrents, setTorrents] = useState<TorrentInfo[]>([]);
   const [speedHistory, setSpeedHistory] = useState<number[]>(Array(40).fill(0));
   const [loading, setLoading] = useState(true);
@@ -467,10 +467,11 @@ export const DownloadsView: React.FC<{ onSuccessfulCompletion?: (kind: 'download
   }, []);
 
   useEffect(() => {
-    loadTorrents();
-    const interval = setInterval(loadTorrents, 1000); // Poll every 1s for fluid graph
-    return () => clearInterval(interval);
-  }, [loadTorrents]);
+    if (!active) return;
+    void loadTorrents();
+    const interval = window.setInterval(() => { void loadTorrents(); }, 2500);
+    return () => window.clearInterval(interval);
+  }, [active, loadTorrents]);
 
   const withActing = async (id: string, fn: () => Promise<void>) => {
     setActingOn(s => new Set(s).add(id));
@@ -539,11 +540,11 @@ export const DownloadsView: React.FC<{ onSuccessfulCompletion?: (kind: 'download
   const totalSpeed = activeTorrents.reduce((sum, t) => sum + t.downloadSpeed, 0);
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+    <div className="mn-downloads-view flex-1 flex flex-col overflow-hidden bg-slate-50">
       {/* Header */}
       <div className="px-6 py-4 bg-white border-b border-slate-200 flex items-end justify-between">
         <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0">
+          <div className="mn-downloads-header-icon w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0">
             <ArrowDownCircle className="w-6 h-6 text-blue-600" />
           </div>
           <div>

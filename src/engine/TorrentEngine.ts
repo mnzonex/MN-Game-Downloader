@@ -1,4 +1,5 @@
 import { recordCompletion } from './Library';
+import { removeTorrentTempPayload } from './downloadCleanup';
 /**
  * TorrentEngine.ts — Core BitTorrent download engine for MN Game Downloader.
  *
@@ -88,12 +89,8 @@ class TorrentEngine extends EventEmitter {
       return;
     }
 
-    // Clean up any stale engine.exe processes from previous abnormal terminations
-    if (process.platform === 'win32') {
-      try {
-        execSync('taskkill /F /IM engine.exe', { stdio: 'ignore' });
-      } catch { /* ignore if no engine.exe is running */ }
-    }
+    // Never kill processes by image name: another application may legitimately use
+    // an executable named engine.exe. Only this instance's tracked child is managed.
 
     console.log(`[TorrentEngine] Starting native sidecar on port ${PORT}...`);
     console.log(`[TorrentEngine] Executable: ${engineExe}`);
@@ -291,7 +288,7 @@ class TorrentEngine extends EventEmitter {
 
   // ── Add torrent ──────────────────────────────────────────────────────────────
 
-  async add(magnetLink: string): Promise<{ id: string; name: string }> {
+  async add(magnetLink: string, sourceId?: string): Promise<{ id: string; name: string }> {
     if (!this.started) throw new Error('Torrent engine not started.');
 
     const destPath = dbGetSetting('download_path',
@@ -334,6 +331,7 @@ class TorrentEngine extends EventEmitter {
         peers: 0,
         seeds: 0,
         eta_secs: -1,
+        source_id: sourceId || null,
       });
 
       return { id, name };
@@ -558,46 +556,31 @@ class TorrentEngine extends EventEmitter {
 
   async remove(id: string, deleteFiles: boolean) {
     const existing = dbGetTorrent(id);
-    if (existing && path.resolve(existing.save_path) === path.resolve(existing.dest_path)) deleteFiles = false;
-    // Tell Python engine to remove torrent (it also cleans up .fastresume/.meta)
-    try {
-      await fetch(`${API_URL}/remove`, { method: 'POST', body: JSON.stringify({ id, delete_files: deleteFiles }) });
-    } catch { /* ignore — engine may be shutting down */ }
+    if (existing && (path.resolve(existing.save_path) === path.resolve(existing.dest_path) || existing.task_kind === 'repair')) {
+      deleteFiles = false;
+    }
 
-    // Always clean up resume files from Node.js side too, in case the HTTP call
-    // failed (e.g., engine crashed, app was force-closed). This is the root cause
-    // of the "delete → reopen → same download restarts" bug.
+    // The sidecar removes only the payload currently attached to the torrent
+    // handle. For active downloads that is .mn-temp, never the final download folder.
+    try {
+      const response = await fetch(API_URL + '/remove', {
+        method: 'POST',
+        body: JSON.stringify({ id, delete_files: deleteFiles }),
+      });
+      if (!response.ok) console.warn('[TorrentEngine] Sidecar remove returned HTTP ' + response.status + ' for ' + id + '.');
+    } catch { /* the sidecar may already be shutting down */ }
+
+    // Always clean up resume files from Node.js too, even if the sidecar call failed.
     const resumeDir = path.join(getHiddenDownloadDir(), '.resume');
-    const fastresumePath = path.join(resumeDir, `${id}.fastresume`);
-    const metaPath = path.join(resumeDir, `${id}.meta`);
+    const fastresumePath = path.join(resumeDir, id + '.fastresume');
+    const metaPath = path.join(resumeDir, id + '.meta');
     try { if (fs.existsSync(fastresumePath)) fs.unlinkSync(fastresumePath); } catch { /* ignore */ }
     try { if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath); } catch { /* ignore */ }
 
-    // Fallback manual file cleanup if engine didn't delete them
-    if (deleteFiles) {
-      const row = dbGetTorrent(id);
-      if (row) {
-        // Clean up the temp download directory
-        if (fs.existsSync(row.save_path)) {
-          const torrentDir = path.join(row.save_path, row.name || '');
-          if (fs.existsSync(torrentDir)) {
-            try { fs.rmSync(torrentDir, { recursive: true, force: true }); } catch { /* ignore */ }
-          }
-          // Also try to remove the .mn-temp directory if empty
-          try {
-            const remaining = fs.readdirSync(row.save_path);
-            if (remaining.length === 0) fs.rmdirSync(row.save_path);
-          } catch { /* ignore */ }
-        }
-        // Also clean up dest_path if files were moved there
-        if (row.dest_path && fs.existsSync(row.dest_path)) {
-          const destTorrentDir = path.join(row.dest_path, row.name || '');
-          if (fs.existsSync(destTorrentDir)) {
-            try { fs.rmSync(destTorrentDir, { recursive: true, force: true }); } catch { /* ignore */ }
-          }
-        }
-      }
-    }
+    // Fallback cleanup is deliberately restricted to this task's .mn-temp payload.
+    // Never remove dest_path/name here: it may be a previously completed copy
+    // of the same game while this new download is still in progress.
+    if (deleteFiles && existing) removeTorrentTempPayload(existing);
 
     dbDeleteTorrent(id);
   }

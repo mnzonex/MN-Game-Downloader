@@ -170,11 +170,11 @@ export const ScheduleDownloadModal: React.FC<ScheduleDownloadModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
       <div
-        className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
+        className="mn-schedule-download-modal bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="p-6 border-b border-slate-100 flex items-start justify-between bg-gradient-to-r from-slate-50 to-white">
+        <div className="mn-schedule-download-header p-6 border-b border-slate-100 flex items-start justify-between bg-gradient-to-r from-slate-50 to-white">
           <div className="space-y-1 pr-4">
             <div className="flex items-center gap-2">
               <span
@@ -435,7 +435,7 @@ export const ScheduleDownloadModal: React.FC<ScheduleDownloadModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 px-6 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
+        <div className="mn-schedule-download-footer p-4 px-6 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
           <button
             type="button"
             onClick={onClose}

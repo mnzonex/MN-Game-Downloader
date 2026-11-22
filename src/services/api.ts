@@ -11,13 +11,25 @@ export const getApiUrl = (path: string): string => {
   return `${base}${cleanPath}`;
 };
 
+let apiTokenPromise: Promise<string> | null = null;
+
+async function getDesktopApiToken(): Promise<string> {
+  const bridge = (window as any).electron;
+  if (typeof bridge?.getApiToken !== 'function') return '';
+  if (!apiTokenPromise) {
+    apiTokenPromise = Promise.resolve(bridge.getApiToken()).catch((error: unknown) => {
+      apiTokenPromise = null;
+      throw error;
+    });
+  }
+  return apiTokenPromise;
+}
+
 export const apiFetch = async (path: string, options: RequestInit = {}): Promise<Response> => {
   const url = getApiUrl(path);
-  return fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
+  const headers = new Headers(options.headers || {});
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const token = await getDesktopApiToken();
+  if (token) headers.set('X-MN-API-Token', token);
+  return fetch(url, { ...options, headers });
 };

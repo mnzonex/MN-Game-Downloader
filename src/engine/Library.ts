@@ -8,10 +8,18 @@ export interface LibraryGame {
   size: number; verifiedAt?: string; executable?: string; installer?: string;
   addedAt: number; available?: boolean;
 }
+export interface ManualLibraryGame {
+  id: string;
+  name: string;
+  launcherPath: string;
+  coverPath?: string;
+  addedAt: number;
+}
 function init() {
   getDb().exec(`CREATE TABLE IF NOT EXISTS library (id TEXT PRIMARY KEY, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS download_history (event_id TEXT PRIMARY KEY, torrent_id TEXT, data TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS game_context (id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS game_context (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS manual_library_games (id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
 }
 export function libraryList(): LibraryGame[] {
   init();
@@ -25,6 +33,60 @@ export function libraryGet(id: string): LibraryGame {
   if (!game) throw new Error('Game not found in library');
   return game;
 }
+export function manualLibraryList(): ManualLibraryGame[] {
+  init();
+  return (getDb().prepare('SELECT data FROM manual_library_games ORDER BY rowid DESC').all() as any[])
+    .map(row => JSON.parse(row.data) as ManualLibraryGame);
+}
+export function addManualLibraryGame(name: string, launcherPath: string): ManualLibraryGame {
+  init();
+  const cleanName = typeof name === 'string' ? name.trim().slice(0, 120) : '';
+  const cleanPath = typeof launcherPath === 'string' ? path.resolve(launcherPath.trim().replace(/^['"]|['"]$/g, '')) : '';
+  if (!cleanName) throw new Error('Enter a game name.');
+  if (!path.isAbsolute(cleanPath) || !['.exe', '.lnk'].includes(path.extname(cleanPath).toLowerCase())) {
+    throw new Error('Choose a game .exe or Windows .lnk shortcut.');
+  }
+  let stat: fs.Stats;
+  try { stat = fs.statSync(cleanPath); } catch { throw new Error('The selected game launcher could not be found.'); }
+  if (!stat.isFile()) throw new Error('Choose a game launcher file, not a folder.');
+  if (path.extname(cleanPath).toLowerCase() === '.exe' && isInstaller(cleanPath)) {
+    throw new Error('That looks like an installer. Select the installed game launcher instead of setup.exe.');
+  }
+  const normalized = process.platform === 'win32' ? cleanPath.toLowerCase() : cleanPath;
+  const id = 'manual-' + crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 24);
+  const existing = getDb().prepare('SELECT data FROM manual_library_games WHERE id = ?').get(id) as any;
+  if (existing) {
+    const game = JSON.parse(existing.data) as ManualLibraryGame;
+    if (game.name !== cleanName) {
+      game.name = cleanName;
+      getDb().prepare('UPDATE manual_library_games SET data = ? WHERE id = ?').run(JSON.stringify(game), id);
+    }
+    return game;
+  }
+  const game: ManualLibraryGame = { id, name: cleanName, launcherPath: cleanPath, addedAt: Date.now() };
+  getDb().prepare('INSERT INTO manual_library_games VALUES (?, ?)').run(id, JSON.stringify(game));
+  return game;
+}
+export function setManualGameCover(id: string, coverPath: string): ManualLibraryGame {
+  init();
+  const row = getDb().prepare('SELECT data FROM manual_library_games WHERE id = ?').get(id) as any;
+  if (!row) throw new Error('This manually added game was not found.');
+  const game = JSON.parse(row.data) as ManualLibraryGame;
+  if (!path.isAbsolute(coverPath) || !fs.existsSync(coverPath) || !fs.statSync(coverPath).isFile()) {
+    throw new Error('The selected cover image could not be found.');
+  }
+  game.coverPath = coverPath;
+  getDb().prepare('UPDATE manual_library_games SET data = ? WHERE id = ?').run(JSON.stringify(game), id);
+  return game;
+}
+export function removeManualLibraryGame(id: string): boolean {
+  init();
+  if (typeof id !== 'string' || !/^manual-[a-f0-9]{24}$/i.test(id)) {
+    throw new Error('Choose a manually added game first.');
+  }
+  const result = getDb().prepare('DELETE FROM manual_library_games WHERE id = ?').run(id);
+  return Number(result.changes) > 0;
+}
 function save(game: LibraryGame) {
   init(); getDb().prepare('INSERT OR REPLACE INTO library VALUES (?, ?)').run(game.id, JSON.stringify(game));
 }
@@ -34,9 +96,14 @@ export async function rememberGame(id: string, name?: string, coverUrl?: string)
   const context = previous ? JSON.parse(previous.data) : {};
   if (name) context.name = name.slice(0, 500);
   getDb().prepare('INSERT OR REPLACE INTO game_context VALUES (?, ?)').run(id, JSON.stringify(context));
-  if (!coverUrl || !/^https?:\/\//i.test(coverUrl)) return;
+  if (!coverUrl) return;
+  let cover: URL;
+  try { cover = new URL(coverUrl); } catch { return; }
+  const allowedCoverDomains = ['fitgirl-repacks.site', 'ero-labs.com', 'gog-statics.com', 'steamstatic.com', 'epicgames.com', 'unrealengine.com'];
+  const trustedCoverHost = allowedCoverDomains.some(domain => cover.hostname === domain || cover.hostname.endsWith(`.${domain}`));
+  if (cover.protocol !== 'https:' || cover.username || cover.password || cover.port || !trustedCoverHost) return;
   try {
-    const response = await fetch(coverUrl, { signal: AbortSignal.timeout(15000) });
+    const response = await fetch(cover.toString(), { redirect: 'error', signal: AbortSignal.timeout(15000) });
     const mime = response.headers.get('content-type') || '';
     if (!response.ok || !/^image\/(png|jpeg|webp)/i.test(mime) || !response.body) return;
     const chunks: Uint8Array[] = []; let length = 0;
@@ -71,7 +138,21 @@ export async function recordCompletion(row: any, manifestPath?: string) {
   }
   const history = { id: row.id, name: context.name || row.name, size: row.size,
     folder, completedAt: Date.now(), magnet: row.magnet, taskKind: row.task_kind || 'download' };
-  getDb().prepare('INSERT OR IGNORE INTO download_history VALUES (?, ?, ?)').run(`${row.id}:${row.added_at}`, row.id, JSON.stringify(history));
+  const inserted = getDb().prepare('INSERT OR IGNORE INTO download_history VALUES (?, ?, ?)').run(`${row.id}:${row.added_at}`, row.id, JSON.stringify(history));
+  if (inserted.changes > 0 && row.task_kind !== 'repair') {
+    try {
+      const capture = (globalThis as any).mnAnalyticsCapture;
+      if (typeof capture === 'function') {
+        capture('download_completed', {
+          game_name: context.name || row.name,
+          source_id: row.source_id || undefined,
+          download_type: typeof row.magnet === 'string' && row.magnet.startsWith('magnet:') ? 'torrent' : 'http',
+          bytes: Math.max(0, Number(row.size) || 0),
+          duration_ms: Math.max(0, Date.now() - (Number(row.started_at) || Number(row.added_at) || Date.now())),
+        });
+      }
+    } catch { /* Analytics must never interrupt completion/history. */ }
+  }
 }
 export function historyList() {
   init(); return (getDb().prepare('SELECT data FROM download_history ORDER BY rowid DESC LIMIT 200').all() as any[]).map(r => JSON.parse(r.data));
@@ -102,7 +183,7 @@ export function removeLibraryGame(id: string) {
   return libraryList();
 }
 export function isInstaller(executable: string) {
-  return /^(setup|install|unins|uninstall|dxsetup|vcredist|vc_redist|redist)([._\-\d ]|$)/i.test(path.basename(executable, '.exe'));
+  return /^(setup|install|unins|uninstall|dxsetup|vcredist|vc_redist|redist)([._ 0-9-]|$)/i.test(path.basename(executable, path.extname(executable)).toLowerCase());
 }
 const scanCandidates = new Map<string, { file: string; expires: number }>();
 export async function importLibraryCandidates(tokens: string[]) {

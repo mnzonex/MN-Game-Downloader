@@ -1,80 +1,487 @@
-import React, { useEffect, useState } from 'react';
-import { Gamepad2, FolderSearch, Play, Download, RefreshCw, Trash2 } from 'lucide-react';
-import { apiFetch, getApiUrl } from '../services/api';
-import { formatSize } from '../services/downloadApi';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Gamepad2, Play, RefreshCw, Search, Loader2, MonitorDown, Library,
+  Plus, X, FolderOpen, MoreHorizontal, ImagePlus, Check, MinusCircle,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
+interface InstalledGame {
+  id: string;
+  name: string;
+  source: string;
+  sourceId: string;
+  appId?: string;
+  installLocation: string;
+  executable?: string;
+  launcherPath?: string;
+  launchUri?: string;
+  coverUrl?: string;
+  coverDataUrl?: string;
+  iconDataUrl?: string;
+  isManual?: boolean;
+}
+
+const nativeBridge = () => (window as any).electron;
+
+const InstalledGameCard: React.FC<{
+  game: InstalledGame;
+  launching: boolean;
+  uploadingCover: boolean;
+  onPlay: (game: InstalledGame) => void;
+  onUploadCover: (game: InstalledGame) => void;
+  onRemoveFromLibrary: (game: InstalledGame) => void;
+}> = ({ game, launching, uploadingCover, onPlay, onUploadCover, onRemoveFromLibrary }) => {
+  const [coverFailed, setCoverFailed] = useState(false);
+  const [iconFailed, setIconFailed] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const hasCoverArt = !coverFailed && Boolean(game.coverDataUrl || game.coverUrl);
+  const iconArt = !iconFailed ? game.iconDataUrl || '' : '';
+  const artwork = hasCoverArt ? (game.coverDataUrl || game.coverUrl || '') : iconArt;
+  const artworkKind = hasCoverArt ? 'cover' : iconArt ? 'icon' : 'fallback';
+  useEffect(() => { setCoverFailed(false); setIconFailed(false); }, [game.coverDataUrl, game.coverUrl, game.iconDataUrl]);
+
+  return (
+    <article className={`mn-installed-card ${game.isManual ? 'is-manual' : ''}`}>
+      <div className={`mn-installed-art ${artworkKind === 'icon' ? 'has-file-icon' : ''} ${artworkKind === 'cover' ? 'has-cover-art' : ''}`}>
+        {artwork ? (
+          <img
+            className={`mn-installed-art-image ${artworkKind === 'icon' ? 'is-file-icon' : 'is-cover-art'}`}
+            src={artwork}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            onError={() => artworkKind === 'cover' ? setCoverFailed(true) : setIconFailed(true)}
+          />
+        ) : (
+          <div className="mn-installed-fallback">
+            <Gamepad2 className="w-10 h-10" />
+            <span>{game.name.slice(0, 1).toUpperCase()}</span>
+          </div>
+        )}
+        <div className="mn-installed-art-shade" />
+        <span className="mn-installed-source">{game.isManual ? 'MANUAL' : game.source}</span>
+        {game.isManual && (
+          <div className="mn-installed-card-menu">
+            <button
+              type="button"
+              className="mn-installed-menu-trigger"
+              onClick={() => setMenuOpen(value => !value)}
+              aria-label={'More options for ' + game.name}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+            {menuOpen && (
+              <div className="mn-installed-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); onUploadCover(game); }}
+                  disabled={uploadingCover}
+                >
+                  {uploadingCover ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
+                  <span>{game.coverDataUrl ? 'Change cover image' : 'Upload cover image'}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="mn-installed-menu-remove"
+                  onClick={() => { setMenuOpen(false); onRemoveFromLibrary(game); }}
+                >
+                  <MinusCircle className="w-4 h-4" />
+                  <span>Remove from Library</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="mn-installed-details">
+        <h3 title={game.name}>{game.name}</h3>
+        <div className="mn-installed-meta">
+          <span className="mn-installed-ready"><i /> {game.isManual ? 'Added manually' : 'Installed'}</span>
+          {game.appId && <span className="mn-installed-id">#{game.appId}</span>}
+        </div>
+        <button
+          type="button"
+          className="mn-installed-play"
+          onClick={() => onPlay(game)}
+          disabled={launching}
+        >
+          {launching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+          <span>{launching ? 'Opening…' : 'Play'}</span>
+        </button>
+      </div>
+    </article>
+  );
+};
+
 export function LibraryView({ active }: { active: boolean }) {
-  const [games, setGames] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [candidates, setCandidates] = useState<any[]>([]);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [jobs, setJobs] = useState<any[]>([]);
-  const desktop = () => (window as any).electron;
-  const load = async () => {
-    const response = await apiFetch('/api/library');
-    if (response.ok) setGames(await response.json());
-  };
-  const scan = async (choose = false) => {
-    setBusy(true);
+  const [games, setGames] = useState<InstalledGame[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [launchingId, setLaunchingId] = useState<string | null>(null);
+  const [uploadingCoverId, setUploadingCoverId] = useState<string | null>(null);
+  const [gamePendingRemoval, setGamePendingRemoval] = useState<InstalledGame | null>(null);
+  const [removingGameId, setRemovingGameId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [error, setError] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
+  const [gameName, setGameName] = useState('');
+  const [launcherPath, setLauncherPath] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState('');
+
+  const load = useCallback(async (force = false) => {
+    const bridge = nativeBridge();
+    if (typeof bridge?.getInstalledGames !== 'function') {
+      setError('Installed-game detection is available in the Windows desktop app.');
+      setLoading(false);
+      return;
+    }
+
+    if (force) setRefreshing(true);
     try {
-      const folder = choose ? await desktop()?.showOpenDialog('Select game library folder') : undefined;
-      if (choose && !folder) return;
-      const response = await apiFetch('/api/library/scan', { method: 'POST', body: JSON.stringify({ folder }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
-      setGames(result.games);
-      setCandidates(result.candidates || []); setSelected([]);
-      if (!result.candidates?.length) toast.info("No saved game packages found. Use Repair files on the game page to check an older download.");
-      if (result.limited) toast.info('Scan limit reached. Add a more specific game folder.');
-    } catch (e: any) { toast.error(e.message); } finally { setBusy(false); }
-  };
+      const result = await bridge.getInstalledGames(force);
+      if (!Array.isArray(result)) throw new Error('Windows returned an invalid game list.');
+      setGames(result);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Installed games could not be detected.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!active) return;
-    void load();
-    const timer = setInterval(() => { void load(); desktop()?.getLaunchJobs?.().then(setJobs).catch(() => {}); }, 2000);
+    void load(false);
+    const interval = window.setInterval(() => { void load(false); }, 60000);
+    return () => window.clearInterval(interval);
+  }, [active, load]);
 
-    return () => { clearInterval(timer); };
-  }, [active]);
-  const remove = async (id: string) => {
-    try { const response = await apiFetch('/api/library/' + id, { method: 'DELETE' });
-      if (!response.ok) throw new Error('Could not remove game');
-      setGames(await response.json()); toast.success('Removed from library. Your files are unchanged.');
-    } catch (e: any) { toast.error(e.message); }
-  };
-  const importSelected = async () => {
-    setBusy(true);
-    try { const response = await apiFetch('/api/library/import', { method: 'POST', body: JSON.stringify({ tokens: selected }) });
-      const result = await response.json(); if (!response.ok) throw new Error(result.error);
-      setGames(result); setCandidates([]); setSelected([]);
-    } catch (e: any) { toast.error(e.message); } finally { setBusy(false); }
-  };
-  const locate = async (id?: string) => {
+  const visibleGames = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return games;
+    return games.filter(game =>
+      game.name.toLowerCase().includes(query) || game.source.toLowerCase().includes(query)
+    );
+  }, [games, searchQuery]);
+
+  const play = async (game: InstalledGame) => {
+    const bridge = nativeBridge();
+    if (typeof bridge?.launchInstalledGame !== 'function') {
+      toast.error('Game launching is only available in the Windows desktop app.');
+      return;
+    }
+    setLaunchingId(game.id);
     try {
-      if (!desktop()?.chooseGameExecutable) throw new Error('Open the desktop app to select a game executable.');
-      await desktop().chooseGameExecutable(id); await load();
-    } catch (e: any) { toast.error(e.message); }
+      await bridge.launchInstalledGame(game.id);
+      toast.success('Opening ' + game.name);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'The game could not be opened.');
+    } finally {
+      setLaunchingId(null);
+    }
   };
-  const launch = async (id: string, action: string) => {
+
+  const browseLauncher = async () => {
+    const bridge = nativeBridge();
+    if (typeof bridge?.chooseManualGameLauncher !== 'function') {
+      setAddError('The Windows file picker is not available.');
+      return;
+    }
     try {
-      if (!desktop()?.launchGame) throw new Error('Game launching is available in the desktop app.');
-      await desktop().launchGame(id, action);
-      setJobs(await desktop().getLaunchJobs());
-    } catch (e: any) { toast.error(e.message); }
+      const selected = await bridge.chooseManualGameLauncher();
+      if (!selected) return;
+      setLauncherPath(selected);
+      if (!gameName.trim()) {
+        const filename = selected.split(/[\\/]/).pop() || '';
+        setGameName(filename.replace(/\.(exe|lnk)$/i, '').replace(/[._-]+/g, ' ').trim());
+      }
+      setAddError('');
+    } catch (cause) {
+      setAddError(cause instanceof Error ? cause.message : 'Could not open the file picker.');
+    }
   };
-  return <div className="flex-1 overflow-y-auto p-6 space-y-5">
-    <header className="flex flex-wrap gap-3 items-center justify-between"><div><h2 className="text-xl font-black">Game Library</h2><p className="text-xs text-slate-500 mt-1">Your downloaded packages and installed games</p></div><div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => void load()} className="p-2 border rounded-xl" title="Refresh library"><RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} /></button><button disabled={busy} onClick={() => void scan(true)} className="px-3 py-2 border rounded-xl text-sm flex gap-2"><FolderSearch className="w-4" />Scan folder</button></div></header>
-    <p className="text-xs text-slate-500">Install opens the repack setup. After installation, the library detects the game from Windows installation records and enables Play. If the installer provides no usable record, use Link installed game. Scan folder finds saved packages for you to review before adding.</p>
-    {!!candidates.length && <section className="bg-white border rounded-2xl p-4 space-y-3"><h3 className="font-bold">Choose packages to add</h3><p className="text-xs text-slate-500">Nothing is added until you confirm.</p>{candidates.map(item => <label key={item.token} className="flex items-start gap-3 border-b py-2"><input type="checkbox" checked={selected.includes(item.token)} onChange={event => setSelected(event.target.checked ? [...selected, item.token] : selected.filter(t => t !== item.token))} /><span><strong className="text-sm">{item.name}</strong><span className="block text-xs text-slate-500 break-all">{item.folder}</span></span></label>)}<div className="flex gap-3"><button disabled={busy || !selected.length} onClick={() => void importSelected()} className="bg-emerald-600 text-white px-4 py-2 rounded-xl disabled:opacity-50">Add selected ({selected.length})</button><button onClick={() => setCandidates([])}>Cancel</button></div></section>}
-    {!games.length && <div className="p-12 border border-dashed rounded-2xl text-center text-slate-500"><Gamepad2 className="mx-auto mb-3" /><p>No games added yet. Completed downloads appear here automatically.</p></div>}
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">{games.map(game => <article key={game.id} className="rounded-2xl bg-white border overflow-hidden shadow-sm">
-      <div className="h-40 bg-slate-100 flex items-center justify-center">{game.cover ? <img src={getApiUrl(`/api/library/${game.id}/cover`)} alt={game.name} className="w-full h-full object-cover" /> : <Gamepad2 className="w-12 h-12 text-slate-300" />}</div>
-      <div className="p-4 space-y-3"><h3 className="font-bold line-clamp-2">{game.name}</h3><p className="text-xs text-slate-500 break-all">{game.folder}</p><p className="text-xs text-slate-500">{formatSize(game.size)} · {game.executable ? 'Ready to play' : game.available ? 'Downloaded package' : 'Folder unavailable — scan its new location'}</p><div className="flex flex-wrap gap-2">
-        {game.executable ? <button onClick={() => void launch(game.id, 'play')} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm flex gap-2"><Play className="w-4" />Play</button> : game.available && game.installer && <button onClick={() => void launch(game.id, 'install')} className="px-3 py-2 rounded-xl bg-blue-600 text-white text-sm flex gap-2"><Download className="w-4" />Install</button>}
-        <button onClick={() => void locate(game.id)} className="px-3 py-2 rounded-xl border text-sm">Link installed game</button>
-        <button onClick={() => void remove(game.id)} title="Remove from library only; files are kept" className="px-3 py-2 rounded-xl border text-sm text-red-600 flex gap-2"><Trash2 className="w-4" />Remove</button>
-      </div>{game.verifiedAt && <p className="text-[10px] text-slate-400">Package last verified {new Date(game.verifiedAt).toLocaleString()}</p>}</div>
-    </article>)}</div>
-    {!!jobs.length && <section className="space-y-3"><h3 className="font-bold">Launch / installation activity</h3><p className="text-xs text-slate-500">Process output and available installer logs are shown below. GUI-only errors and detached child installers may not be observable.</p>{jobs.map(job => <details key={job.id} className="bg-white border rounded-xl p-3" open={job.state === 'failed'}><summary className="text-sm font-semibold cursor-pointer">{job.name} · {job.action} · {job.state}{job.exitCode !== null ? ` (exit ${job.exitCode})` : ''}</summary><pre className="whitespace-pre-wrap text-xs text-slate-600 mt-3 max-h-48 overflow-y-auto">{job.messages.join('\n') || 'No process output captured.'}</pre></details>)}</section>}
-  </div>;
+
+  const addGame = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const bridge = nativeBridge();
+    if (typeof bridge?.addManualGame !== 'function') {
+      setAddError('Manual game registration is available in the Windows desktop app.');
+      return;
+    }
+    setAdding(true);
+    setAddError('');
+    try {
+      await bridge.addManualGame(gameName.trim(), launcherPath.trim());
+      await load(true);
+      setAddOpen(false);
+      setGameName('');
+      setLauncherPath('');
+      toast.success('Added ' + gameName.trim() + ' to your Library');
+    } catch (cause) {
+      setAddError(cause instanceof Error ? cause.message : 'The game could not be added.');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const uploadCover = async (game: InstalledGame) => {
+    const bridge = nativeBridge();
+    if (typeof bridge?.chooseManualGameCover !== 'function') {
+      toast.error('Cover image upload is available in the Windows desktop app.');
+      return;
+    }
+    setUploadingCoverId(game.id);
+    try {
+      const result = await bridge.chooseManualGameCover(game.id);
+      if (!result) return;
+      await load(true);
+      toast.success('Cover image updated for ' + game.name);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'The cover image could not be saved.');
+    } finally {
+      setUploadingCoverId(null);
+    }
+  };
+
+  const confirmRemoveFromLibrary = async () => {
+    if (!gamePendingRemoval) return;
+    const game = gamePendingRemoval;
+    const bridge = nativeBridge();
+    if (typeof bridge?.removeManualGame !== 'function') {
+      toast.error('Removing games from the Library is only available in the Windows desktop app.');
+      return;
+    }
+
+    setRemovingGameId(game.id);
+    try {
+      const result = await bridge.removeManualGame(game.id);
+      if (!result?.ok) throw new Error('The game could not be removed from your Library.');
+      setGamePendingRemoval(null);
+      await load(true);
+      toast.success(game.name + ' was removed from your Library. Its game files were kept.');
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'The game could not be removed from your Library.');
+    } finally {
+      setRemovingGameId(null);
+    }
+  };
+
+  const closeAddModal = () => {
+    if (adding) return;
+    setAddOpen(false);
+    setAddError('');
+  };
+
+  return (
+    <div className="mn-library-page">
+      <div className="mn-library-content">
+        <header className="mn-library-header">
+          <div>
+            <p className="mn-eyebrow">YOUR PC GAME COLLECTION</p>
+            <h1>Game Library</h1>
+          </div>
+          <div className="mn-library-actions">
+            <label className="mn-library-search">
+              <Search className="w-4 h-4 shrink-0" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={event => setSearchQuery(event.target.value)}
+                placeholder="Find a game…"
+                aria-label="Search installed games"
+              />
+            </label>
+            <button
+              type="button"
+              className="mn-library-refresh"
+              onClick={() => void load(true)}
+              disabled={refreshing || loading}
+              aria-label="Refresh installed games"
+              title="Refresh installed games"
+            >
+              {refreshing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            </button>
+            <button type="button" className="mn-library-add" onClick={() => setAddOpen(true)}>
+              <Plus className="w-4 h-4" />
+              <span>Add Game</span>
+            </button>
+          </div>
+        </header>
+
+        {error && (
+          <div className="mn-library-error" role="alert">
+            <MonitorDown className="w-5 h-5 shrink-0" />
+            <span>{error}</span>
+            <button type="button" onClick={() => void load(true)}>Retry</button>
+          </div>
+        )}
+
+        {loading && (
+          <div className="mn-installed-grid" aria-label="Loading installed games">
+            {Array.from({ length: 8 }).map((_, index) => (
+              <div className="mn-installed-skeleton" key={index}>
+                <div className="mn-installed-skeleton-art" />
+                <div className="mn-installed-skeleton-line" />
+                <div className="mn-installed-skeleton-button" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && !error && games.length === 0 && (
+          <div className="mn-library-empty">
+            <div className="mn-library-empty-icon"><Library className="w-7 h-7" /></div>
+            <h2>No games in your Library yet</h2>
+            <p>Installed games are detected automatically. You can also add a game using its desktop shortcut or launcher file.</p>
+            <button type="button" onClick={() => setAddOpen(true)}>
+              <Plus className="w-4 h-4" /> Add your first game
+            </button>
+          </div>
+        )}
+
+        {!loading && !error && games.length > 0 && visibleGames.length === 0 && (
+          <div className="mn-library-empty compact">
+            <Search className="w-6 h-6" />
+            <h2>No matching games</h2>
+            <p>Try a different game title or store name.</p>
+          </div>
+        )}
+
+        {!loading && !error && visibleGames.length > 0 && (
+          <div className="mn-installed-grid">
+            {visibleGames.map(game => (
+              <InstalledGameCard
+                key={game.id}
+                game={game}
+                launching={launchingId === game.id}
+                uploadingCover={uploadingCoverId === game.id}
+                onPlay={play}
+                onUploadCover={uploadCover}
+                onRemoveFromLibrary={setGamePendingRemoval}
+              />
+            ))}
+          </div>
+        )}
+
+        {!loading && !error && games.length > 0 && (
+          <div className="mn-library-footer">
+            {visibleGames.length} {visibleGames.length === 1 ? 'game' : 'games'}
+          </div>
+        )}
+      </div>
+
+      {addOpen && (
+        <div className="mn-add-game-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) closeAddModal(); }}>
+          <section className="mn-add-game-modal" role="dialog" aria-modal="true" aria-labelledby="mn-add-game-title">
+            <header className="mn-add-game-modal-header">
+              <div className="mn-add-game-modal-icon"><Gamepad2 className="w-5 h-5" /></div>
+              <div>
+                <p className="mn-eyebrow">PERSONAL COLLECTION</p>
+                <h2 id="mn-add-game-title">Add a game</h2>
+              </div>
+              <button type="button" className="mn-add-game-close" onClick={closeAddModal} aria-label="Close add game dialog">
+                <X className="w-4 h-4" />
+              </button>
+            </header>
+            <form onSubmit={addGame} className="mn-add-game-form">
+              <label className="mn-add-game-field">
+                <span>Game name</span>
+                <input
+                  value={gameName}
+                  onChange={event => setGameName(event.target.value)}
+                  placeholder="e.g. Need for Speed Most Wanted"
+                  maxLength={120}
+                  required
+                  autoFocus
+                />
+              </label>
+              <label className="mn-add-game-field">
+                <span>Game launcher path</span>
+                <div className="mn-add-game-path-row">
+                  <input
+                    value={launcherPath}
+                    onChange={event => setLauncherPath(event.target.value)}
+                    placeholder="Paste a .exe or .lnk shortcut path"
+                    required
+                    spellCheck={false}
+                  />
+                  <button type="button" onClick={() => void browseLauncher()}>
+                    <FolderOpen className="w-4 h-4" />
+                    <span>Browse</span>
+                  </button>
+                </div>
+              </label>
+              <p className="mn-add-game-hint">Browse to your Desktop and select the game's shortcut, or paste the full path to the game .exe / .lnk file.</p>
+              {addError && <p className="mn-add-game-error" role="alert">{addError}</p>}
+              <footer className="mn-add-game-footer">
+                <button type="button" className="mn-add-game-cancel" onClick={closeAddModal} disabled={adding}>Cancel</button>
+                <button type="submit" className="mn-add-game-submit" disabled={adding || !gameName.trim() || !launcherPath.trim()}>
+                  {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  <span>{adding ? 'Adding…' : 'Add to Library'}</span>
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {gamePendingRemoval && (
+        <div
+          className="mn-add-game-backdrop"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget && !removingGameId) setGamePendingRemoval(null);
+          }}
+        >
+          <section className="mn-add-game-modal mn-remove-library-modal" role="dialog" aria-modal="true" aria-labelledby="mn-remove-library-title">
+            <header className="mn-add-game-modal-header">
+              <div className="mn-add-game-modal-icon mn-remove-library-icon"><MinusCircle className="w-5 h-5" /></div>
+              <div>
+                <p className="mn-eyebrow">PERSONAL COLLECTION</p>
+                <h2 id="mn-remove-library-title">Remove from Library?</h2>
+              </div>
+              <button
+                type="button"
+                className="mn-add-game-close"
+                onClick={() => setGamePendingRemoval(null)}
+                disabled={Boolean(removingGameId)}
+                aria-label="Close remove game dialog"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </header>
+            <div className="mn-remove-library-body">
+              <p><strong>{gamePendingRemoval.name}</strong> will be removed from your MN Game Downloader Library.</p>
+              <p>The installed game, desktop shortcut, cover image and all game files will stay on your PC. This does not uninstall or delete the game.</p>
+            </div>
+            <footer className="mn-add-game-footer">
+              <button
+                type="button"
+                className="mn-add-game-cancel"
+                onClick={() => setGamePendingRemoval(null)}
+                disabled={Boolean(removingGameId)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="mn-remove-library-confirm"
+                onClick={() => void confirmRemoveFromLibrary()}
+                disabled={Boolean(removingGameId)}
+              >
+                {removingGameId ? <Loader2 className="w-4 h-4 animate-spin" /> : <MinusCircle className="w-4 h-4" />}
+                <span>{removingGameId ? 'Removing…' : 'Remove from Library'}</span>
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+    </div>
+  );
 }

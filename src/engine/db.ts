@@ -50,7 +50,9 @@ function initSchema(db: Database.Database) {
       added_at     INTEGER NOT NULL,
       completed_at INTEGER,
       scheduled_at INTEGER,               -- unix ms — when to auto-start (null = not scheduled)
-      hidden       INTEGER NOT NULL DEFAULT 0  -- 1 = completed+moved, hide from active list
+      hidden       INTEGER NOT NULL DEFAULT 0, -- 1 = completed+moved, hide from active list
+      source_id    TEXT,
+      started_at   INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -68,6 +70,14 @@ function initSchema(db: Database.Database) {
       db.exec(`ALTER TABLE torrents ADD COLUMN scheduled_at INTEGER`);
       console.log('[DB] Migrated: added scheduled_at column to torrents table.');
     }
+    if (!cols.some(c => c.name === 'source_id')) {
+      db.exec(`ALTER TABLE torrents ADD COLUMN source_id TEXT`);
+      console.log('[DB] Migrated: added source_id column to torrents table.');
+    }
+    if (!cols.some(c => c.name === 'started_at')) {
+      db.exec(`ALTER TABLE torrents ADD COLUMN started_at INTEGER`);
+      console.log('[DB] Migrated: added started_at column to torrents table.');
+    }
   } catch (e) {
     console.error('[DB] Migration check failed:', e);
   }
@@ -79,6 +89,7 @@ function initSchema(db: Database.Database) {
     max_upload_speed:   '0',
     port_range:         '6881-6891',
     seed_after_done:    '0',   // 0 = no seeding (stop & remove after move)
+    analytics_enabled:  '0',   // opt-in only; analytics disabled by default
   };
 
   const insert = db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`);
@@ -114,6 +125,8 @@ export interface TorrentRow {
   scheduled_at: number | null;  // unix ms — when to auto-start (null = not scheduled)
   hidden: number;
   task_kind?: string;
+  source_id?: string | null;
+  started_at?: number | null;
 }
 
 export type TorrentStatus =
@@ -133,22 +146,69 @@ export function dbInsertTorrent(row: Omit<TorrentRow, 'added_at' | 'completed_at
     INSERT OR REPLACE INTO torrents
       (id, name, magnet, save_path, dest_path, status, error_msg,
        progress, size, speed_dl, speed_ul, peers, seeds, eta_secs,
-       scheduled_at, added_at, hidden, task_kind)
+       scheduled_at, added_at, hidden, task_kind, source_id, started_at)
     VALUES
       (@id, @name, @magnet, @save_path, @dest_path, @status, @error_msg,
        @progress, @size, @speed_dl, @speed_ul, @peers, @seeds, @eta_secs,
-       @scheduled_at, ${Date.now()}, 0, @task_kind)
-  `).run({ scheduled_at: null, task_kind: 'download', ...row });
+       @scheduled_at, ${Date.now()}, 0, @task_kind, @source_id, @started_at)
+  `).run({
+    scheduled_at: null,
+    task_kind: 'download',
+    source_id: null,
+    started_at: row.status === 'downloading' ? Date.now() : null,
+    ...row,
+  });
+  const storedRow = dbGetTorrent(row.id);
+  if (storedRow?.task_kind !== 'repair') {
+    if (storedRow?.status === 'downloading') {
+      captureDownloadAnalytics('download_started', storedRow);
+    } else if (storedRow?.status === 'scheduled') {
+      captureDownloadAnalytics('download_scheduled', storedRow);
+    }
+  }
+}
+
+function captureDownloadAnalytics(event: string, row: TorrentRow, extra: Record<string, unknown> = {}) {
+  try {
+    const capture = (globalThis as any).mnAnalyticsCapture;
+    if (typeof capture !== 'function' || row.task_kind === 'repair') return;
+    const elapsed = Math.max(0, Date.now() - (row.started_at || row.added_at));
+    const properties = {
+      game_name: row.name,
+      source_id: row.source_id || undefined,
+      download_type: typeof row.magnet === 'string' && row.magnet.startsWith('magnet:') ? 'torrent' : 'http',
+      bytes: Math.max(0, Math.floor((row.size || 0) * Math.max(0, Math.min(1, row.progress || 0)))),
+      duration_ms: elapsed,
+      ...extra,
+    };
+    capture(event, properties);
+  } catch { /* Telemetry must never affect download state. */ }
+}
+
+function classifyDownloadError(message: unknown): string {
+  const text = String(message || '').toLowerCase();
+  if (/enospc|disk full|not enough space|no space left/.test(text)) return 'disk_space';
+  if (/eacces|eperm|permission|access is denied/.test(text)) return 'permission';
+  if (/timeout|timed out|econn|network|socket|dns|offline/.test(text)) return 'network';
+  if (/403|404|410|source unavailable|not found/.test(text)) return 'source_unavailable';
+  if (/hash|checksum|verify|corrupt/.test(text)) return 'verification';
+  return 'engine';
 }
 
 export function dbUpdateTorrentStats(id: string, patch: Partial<TorrentRow>) {
   const db = getDb();
+  const existing = patch.status === 'error' ? dbGetTorrent(id) : null;
   const sets = Object.keys(patch)
     .map(k => `${k} = @${k}`)
     .join(', ');
   if (!sets) return;
   db.prepare(`UPDATE torrents SET ${sets} WHERE id = @id`)
     .run({ id, ...patch });
+  if (existing && patch.status === 'error' && existing.status !== 'error') {
+    captureDownloadAnalytics('download_failed', { ...existing, ...patch } as TorrentRow, {
+      error_category: classifyDownloadError(patch.error_msg || existing.error_msg),
+    });
+  }
 }
 
 export function dbMarkCompleted(id: string) {

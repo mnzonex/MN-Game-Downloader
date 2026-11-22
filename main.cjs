@@ -1,8 +1,111 @@
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, Notification, screen, shell, nativeImage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const crypto = require('crypto');
+const os = require('os');
+const { summarizeAppMetrics } = require('./system-health-metrics.cjs');
+const { sanitizeAnalyticsEvent } = require('./analytics-core.cjs');
+const posthogConfig = require('./posthog-config.cjs');
+
+let posthogClient = null;
+let posthogInitPromise = null;
+let analyticsEnabled = false;
+
+function captureAnalytics(eventName, properties) {
+  if (!analyticsEnabled || !posthogClient) return false;
+  const safeEvent = sanitizeAnalyticsEvent(eventName, properties);
+  if (!safeEvent) return false;
+  try {
+    posthogClient.capture(safeEvent.event, safeEvent.properties);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+globalThis.mnAnalyticsCapture = captureAnalytics;
+
+async function ensurePostHogClient() {
+  if (posthogClient) return posthogClient;
+  if (posthogInitPromise) return posthogInitPromise;
+  posthogInitPromise = (async () => {
+    if (!posthogConfig.projectToken || !posthogConfig.host) throw new Error('PostHog configuration is missing.');
+    const { init } = require('@posthog/electron/main');
+    const client = init({
+      projectToken: posthogConfig.projectToken,
+      host: posthogConfig.host,
+      defaultOptIn: false,
+      personProfiles: 'never',
+      disableGeoip: true,
+      disableRemoteFeatureFlags: true,
+      disableRemoteConfig: true,
+      captureAppLifecycleEvents: false,
+      enableExceptionAutocapture: false,
+      maxQueueAgeMs: 7 * 24 * 60 * 60 * 1000,
+      maxQueueSize: 5000,
+      maxStorageBytes: 5 * 1024 * 1024,
+      storageDirectory: path.join(app.getPath('userData'), 'posthog'),
+      appBuild: app.getVersion(),
+      onError: () => console.warn('[Analytics] PostHog storage/transport issue (details hidden).'),
+    });
+    await client.ready();
+    posthogClient = client;
+    return client;
+  })().catch((error) => {
+    posthogInitPromise = null;
+    throw error;
+  });
+  return posthogInitPromise;
+}
+
+async function setAnalyticsEnabled(enabled, recordLaunch = false) {
+  if (!enabled) {
+    analyticsEnabled = false;
+    if (posthogClient) {
+      try { await posthogClient.optOut(); } catch {}
+    }
+    return { enabled: false };
+  }
+  const client = await ensurePostHogClient();
+  await client.optIn();
+  analyticsEnabled = true;
+  if (recordLaunch) {
+    captureAnalytics('app_launched', {
+      app_version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      electron_version: process.versions.electron,
+    });
+  }
+  return { enabled: true };
+}
+
+async function restoreAnalyticsConsent() {
+  try {
+    const response = await fetch('http://127.0.0.1:3000/api/settings', {
+      headers: { 'X-MN-API-Token': process.env.MN_API_TOKEN },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return;
+    const settings = await response.json();
+    if (settings.analytics_enabled === '1') {
+      await setAnalyticsEnabled(true, true);
+    }
+  } catch (error) {
+    console.warn('[Analytics] Could not restore local consent preference; tracking remains inactive.');
+  }
+}
+
+async function shutdownAnalytics() {
+  analyticsEnabled = false;
+  if (posthogClient) {
+    try { await posthogClient.shutdown(1200); } catch {}
+    posthogClient = null;
+    posthogInitPromise = null;
+  }
+}
 
 let mainWindow;
 let installingUpdate = false;
@@ -12,6 +115,7 @@ async function installDownloadedUpdate() {
   installingUpdate = true;
   try {
     await shutdownEngine();
+    try { await shutdownAnalytics(); } catch { /* Keep queued telemetry on disk for the next launch. */ }
     isQuitting = true;
     isShuttingDown = true;
     autoUpdater.quitAndInstall(true, false);
@@ -21,7 +125,92 @@ async function installDownloadedUpdate() {
   }
 }
 global.installDownloadedUpdate = installDownloadedUpdate;
-require('./desktop-actions.cjs').registerLibraryActions({ ipcMain, dialog, getWindow: () => mainWindow, userData: () => app.getPath('userData') });
+require('./desktop-actions.cjs').registerLibraryActions({
+  ipcMain, dialog, shell, isTrustedSender: isTrustedAppSender,
+  getWindow: () => mainWindow,
+  userData: () => app.getPath('userData'),
+  getIcon: async (file) => {
+    try {
+      if (path.extname(file).toLowerCase() === '.ico') {
+        const shortcutIcon = nativeImage.createFromPath(file);
+        if (!shortcutIcon.isEmpty()) return shortcutIcon.toDataURL();
+      }
+      const image = await app.getFileIcon(file, { size: 'large' });
+      return image.isEmpty() ? '' : image.toDataURL();
+    } catch { return ''; }
+  },
+});
+
+function isTrustedAppSender(event) {
+  const senderUrl = event.senderFrame?.url || '';
+  let trusted = app.isPackaged && senderUrl.startsWith('file://') && senderUrl.toLowerCase().includes('/dist/index.html');
+  if (!trusted && !app.isPackaged) {
+    try {
+      const url = new URL(senderUrl);
+      trusted = url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port === '3000';
+    } catch { trusted = false; }
+  }
+  return trusted;
+}
+
+ipcMain.handle('api:get-token', (event) => {
+  if (!isTrustedAppSender(event) || !process.env.MN_API_TOKEN) {
+    throw new Error('API access is only available to the MN Game Downloader window.');
+  }
+  return process.env.MN_API_TOKEN;
+});
+
+ipcMain.handle('analytics:set-consent', async (event, enabled) => {
+  if (!isTrustedAppSender(event)) throw new Error('Analytics settings are only available to the MN Game Downloader window.');
+  if (typeof enabled !== 'boolean') throw new Error('A valid analytics consent value is required.');
+  return setAnalyticsEnabled(enabled, false);
+});
+
+ipcMain.handle('analytics:capture', (event, eventName, properties) => {
+  if (!isTrustedAppSender(event)) throw new Error('Analytics is only available to the MN Game Downloader window.');
+  return captureAnalytics(eventName, properties);
+});
+
+let previousCpuSample = null;
+ipcMain.handle('system:get-health', (event) => {
+  if (!isTrustedAppSender(event)) throw new Error('System diagnostics are only available to the MN Game Downloader window.');
+  const cpuTimes = os.cpus().map((cpu) => cpu.times);
+  const total = cpuTimes.reduce((sum, item) => sum + item.user + item.nice + item.sys + item.idle + item.irq, 0);
+  const idle = cpuTimes.reduce((sum, item) => sum + item.idle, 0);
+  let cpuPercent = null;
+  if (previousCpuSample) {
+    const totalDelta = total - previousCpuSample.total;
+    const idleDelta = idle - previousCpuSample.idle;
+    if (totalDelta > 0) cpuPercent = Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100));
+  }
+  previousCpuSample = { total, idle };
+
+  const appMetrics = app.getAppMetrics().map((item) => ({
+    type: item.type,
+    workingSetKB: Number(item.memory?.workingSetSize || 0),
+    privateKB: Number(item.memory?.privateBytes || 0),
+    cpuPercent: Number(item.cpu?.percentCPUUsage || 0),
+  }));
+  const appSummary = summarizeAppMetrics(appMetrics);
+
+  return {
+    sampledAt: new Date().toISOString(),
+    cpu: { percent: cpuPercent, logicalCores: cpuTimes.length, model: os.cpus()[0]?.model || 'Unknown CPU' },
+    memory: {
+      totalBytes: os.totalmem(),
+      availableBytes: os.freemem(),
+      usedBytes: Math.max(0, os.totalmem() - os.freemem()),
+    },
+    app: appSummary,
+  };
+});
+
+ipcMain.handle('system:open-game-mode-settings', async (event) => {
+  if (!isTrustedAppSender(event)) throw new Error('Windows Game Mode settings are only available to the MN Game Downloader window.');
+  if (process.platform !== 'win32') throw new Error('Windows Game Mode is only available on Windows.');
+  await shell.openExternal('ms-settings:gaming-gamemode');
+  return { ok: true };
+});
 
 // ─── Single Instance Lock ───────────────────────────────────────────────────
 // Prevents duplicate background processes when opening the app again
@@ -102,53 +291,6 @@ ipcMain.on('notify', (event, { title, body }) => {
   }
 });
 
-// ─── IPC: Windows Defender Exclusion ──────────────────────────────────────────
-
-ipcMain.handle('add-defender-exclusion', async (event, customPaths) => {
-  if (process.platform !== 'win32') {
-    return { ok: false, error: 'Windows Defender is only available on Windows.' };
-  }
-  try {
-    const { exec } = require('child_process');
-    const os = require('os');
-    const uDir = app.getPath('userData');
-    const appDir = process.cwd();
-    const pathsToExclude = Array.from(new Set([
-      uDir,
-      appDir,
-      ...(Array.isArray(customPaths) ? customPaths : [customPaths]).filter(Boolean),
-    ]));
-
-    const pathsArg = pathsToExclude.map(p => `'${p.replace(/'/g, "''")}'`).join(', ');
-    const scriptContent = `Add-MpPreference -ExclusionPath @(${pathsArg}) -ErrorAction SilentlyContinue`;
-
-    // Write to a temporary .ps1 script file to completely prevent nested quotes and spaces issues with Start-Process
-    const tmpScript = path.join(os.tmpdir(), `mn-defender-exclude-${Date.now()}.ps1`);
-    fs.writeFileSync(tmpScript, scriptContent, 'utf8');
-
-    const psCmd = `Start-Process powershell.exe -Verb RunAs -ArgumentList '-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "${tmpScript}"'`;
-
-    return new Promise((resolve) => {
-      exec(`powershell -WindowStyle Hidden -NoProfile -Command "${psCmd}"`, { windowsHide: true }, (err) => {
-        // Clean up temp file
-        setTimeout(() => {
-          try { if (fs.existsSync(tmpScript)) fs.unlinkSync(tmpScript); } catch {}
-        }, 8000);
-
-        if (err) {
-          console.error('[Main] Exclusion error:', err);
-          resolve({ ok: false, error: err.message });
-        } else {
-          console.log('[Main] Windows Defender exclusions requested successfully for:', pathsToExclude);
-          resolve({ ok: true, paths: pathsToExclude });
-        }
-      });
-    });
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-});
-
 // ─── IPC: Directory picker ────────────────────────────────────────────────────
 
 ipcMain.handle('dialog:openDirectory', async (_event, title) => {
@@ -165,7 +307,7 @@ ipcMain.handle('dialog:openDirectory', async (_event, title) => {
 function shutdownEngine() {
   return new Promise((resolve) => {
     const req = http.request(
-      { host: '127.0.0.1', port: 3000, path: '/api/engine/shutdown', method: 'POST' },
+      { host: '127.0.0.1', port: 3000, path: '/api/engine/shutdown', method: 'POST', headers: { 'X-MN-API-Token': process.env.MN_API_TOKEN || '' } },
       (res) => { res.resume(); res.on('end', resolve); }
     );
     req.on('error', resolve);
@@ -203,6 +345,31 @@ function startServer() {
   console.error('[Main] Could not locate Express server bundle.');
 }
 
+function waitForApiHealth(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const attempt = () => {
+      const req = http.get({
+        host: '127.0.0.1',
+        port: 3000,
+        path: '/api/health',
+        headers: { 'X-MN-API-Token': process.env.MN_API_TOKEN || '' },
+      }, (res) => {
+        res.resume();
+        if (res.statusCode === 200) return resolve(true);
+        retry(new Error(`Local API health check returned HTTP ${res.statusCode}.`));
+      });
+      req.setTimeout(1800, () => req.destroy(new Error('Local API health check timed out.')));
+      req.on('error', retry);
+    };
+    const retry = (error) => {
+      if (Date.now() >= deadline) return reject(error);
+      setTimeout(attempt, 250);
+    };
+    attempt();
+  });
+}
+
 // ─── Window ───────────────────────────────────────────────────────────────────
 
 function getAppIconPath() {
@@ -214,9 +381,31 @@ function getAppIconPath() {
 }
 
 function createWindow() {
+  // Windows can report work-area coordinates in monitor pixels while BrowserWindow
+  // expects device-independent pixels. Convert using the display scale factor so
+  // 125%/150% scaling never creates an off-screen window.
+  const display = screen.getPrimaryDisplay();
+  const scaleFactor = display.scaleFactor || 1;
+  const rawWorkArea = display.workArea;
+  const workArea = {
+    x: Math.floor(rawWorkArea.x / scaleFactor),
+    y: Math.floor(rawWorkArea.y / scaleFactor),
+    width: Math.floor(rawWorkArea.width / scaleFactor),
+    height: Math.floor(rawWorkArea.height / scaleFactor),
+  };
+  console.log('[Main] Display work area:', JSON.stringify({ raw: rawWorkArea, scaleFactor, dip: workArea }));
+  const windowWidth = Math.min(1280, workArea.width);
+  const windowHeight = Math.min(800, workArea.height);
+  const windowX = workArea.x + Math.floor((workArea.width - windowWidth) / 2);
+  const windowY = workArea.y + Math.floor((workArea.height - windowHeight) / 2);
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    x: windowX,
+    y: windowY,
+    width: windowWidth,
+    height: windowHeight,
+    minWidth: Math.min(760, windowWidth),
+    minHeight: Math.min(600, windowHeight),
     title: 'MN Game Downloader',
     icon: getAppIconPath(),
     backgroundColor: '#0f172a',
@@ -225,7 +414,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
@@ -249,8 +438,24 @@ function createWindow() {
   }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    require('electron').shell.openExternal(url);
+    try {
+      const target = new URL(url);
+      if (target.protocol === 'https:') void require('electron').shell.openExternal(target.toString());
+      else console.warn('[Main] Blocked external URL with unsupported protocol:', target.protocol);
+    } catch { console.warn('[Main] Blocked malformed external URL.'); }
     return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    let allowed = false;
+    if (app.isPackaged) allowed = targetUrl.startsWith('file://') && targetUrl.toLowerCase().includes('/dist/index.html');
+    else {
+      try {
+        const target = new URL(targetUrl);
+        allowed = target.protocol === 'http:' && target.hostname === '127.0.0.1' && target.port === '3000';
+      } catch { allowed = false; }
+    }
+    if (!allowed) event.preventDefault();
   });
 
   if (app.isPackaged) {
@@ -301,7 +506,7 @@ function createTray() {
   });
 }
 
-app.on('ready', () => {
+app.on('ready', async () => {
   if (!gotTheLock) return;
   const marker = path.join(app.getPath('userData'), 'pending-update.json');
   try {
@@ -310,23 +515,29 @@ app.on('ready', () => {
     else applyUpdateOnStartup = true;
   } catch {}
   createTray();
-  
-  // Pass userData to server so the torrent engine knows where to store files
-  process.env.MN_DATA_DIR = app.getPath('userData');
 
-  // Auto-configure Windows Defender exclusion for AppData path
-  if (process.platform === 'win32') {
-    try {
-      const { exec } = require('child_process');
-      const uDir = app.getPath('userData');
-      exec(`powershell -WindowStyle Hidden -NoProfile -Command "Add-MpPreference -ExclusionPath '${uDir}' -ErrorAction SilentlyContinue"`, { windowsHide: true });
-    } catch (_) {}
+  // Keep all app data local. Development launcher shares a per-run token with
+  // the API process; packaged mode generates a fresh secret in this process.
+  process.env.MN_DATA_DIR = app.getPath('userData');
+  process.env.MN_APP_VERSION = app.getVersion();
+  if (app.isPackaged) {
+    process.env.MN_API_TOKEN = crypto.randomBytes(32).toString('hex');
+  } else if (!process.env.MN_API_TOKEN) {
+    process.env.MN_API_TOKEN = crypto.randomBytes(32).toString('hex');
   }
 
-  http.get('http://127.0.0.1:3000/api/version', (res) => {
-    if (res.statusCode !== 200) startServer();
+  try {
+    // In development the concurrently-started server owns this port; packaged builds start it here.
+    if (app.isPackaged) startServer();
+    await waitForApiHealth();
+    await restoreAnalyticsConsent();
     createWindow();
-  }).on('error', () => { startServer(); createWindow(); });
+  } catch (error) {
+    console.error('[Main] Local API did not become ready:', error);
+    dialog.showErrorBox('MN Game Downloader could not start', 'The local app service could not be verified. Close other software using port 3000 and try again. No external server was used.');
+    app.quit();
+    return;
+  }
 
   if (app.isPackaged) {
     setTimeout(() => {
@@ -347,6 +558,9 @@ app.on('before-quit', async (event) => {
   try {
     await shutdownEngine();
   } catch { /* engine may not be running */ }
+  try {
+    await shutdownAnalytics();
+  } catch { /* offline analytics queue remains on disk */ }
   app.exit(0);
 });
 

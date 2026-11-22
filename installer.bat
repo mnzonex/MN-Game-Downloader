@@ -1,10 +1,10 @@
 @echo off
-TITLE MN Game Downloader v1.2.5 - Production Installer Builder
+TITLE MN Game Downloader v1.2.29 - Production Installer Builder
 COLOR 0B
 CLS
 
 echo ===============================================================================
-echo             MN GAME DOWNLOADER v1.2.5 - PRODUCTION INSTALLER BUILDER
+echo             MN GAME DOWNLOADER v1.2.29 - PRODUCTION INSTALLER BUILDER
 echo               Developer: H M MADHUSHA NIMSARA (MN ZONEX Dev)
 echo                      WhatsApp: https://wa.me/94776941748
 echo ===============================================================================
@@ -54,10 +54,7 @@ if exist "dist\" (
     rmdir /s /q "dist"
     echo [OK] Cleaned dist\
 )
-if exist "release\MN-Game-Downloader-Setup.exe" (
-    del /f /q "release\MN-Game-Downloader-Setup.exe"
-    echo [OK] Removed old Setup EXE
-)
+echo [OK] Previous releases are preserved. The new build will use release-v1.2.29\
 echo.
 
 :: -- Step 5: Compile web assets + bundle server ----------------------------------
@@ -81,17 +78,13 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: -- Step 7: Auto-apply Windows Defender Exclusion -------------------------------
-echo [!] Applying Windows Defender exclusion for install paths...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath '%~dp0', '%LOCALAPPDATA%\Programs\MN Game Downloader', '%APPDATA%\MN Game Downloader' -ErrorAction SilentlyContinue" >nul 2>nul
-echo [OK] Windows Defender exclusions applied.
 
 :: -- Done -----------------------------------------------------------------------
 echo.
 echo ===============================================================================
-echo  [SUCCESS] MN Game Downloader v1.2.5 installer built successfully!
-echo  Setup files are located in the .\release folder.
-echo  Be sure to upload MN-Game-Downloader-Setup.exe and latest.yml to GitHub!
+echo  [SUCCESS] MN Game Downloader v1.2.29 installer built successfully!
+echo  Setup files are located in the .\release-v1.2.29 folder.
+echo  Existing release folders are preserved. No GitHub release was published.
 echo.
 echo  Developer: H M MADHUSHA NIMSARA (MN ZONEX Dev)
 echo  WhatsApp Support: https://wa.me/94776941748

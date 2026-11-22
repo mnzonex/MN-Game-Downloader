@@ -48,8 +48,8 @@ export function RepairModal({ magnet, folder, title, cover, onClose, onStarted }
   };
   const damaged = report?.files.filter((f: any) => f.status !== 'ok') || [];
   const files = showAll ? report?.files || [] : damaged;
-  return <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
-    <section role="dialog" aria-label="Check game files" className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl">
+  return <div className="mn-repair-modal-backdrop fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <section role="dialog" aria-label="Check game files" className="mn-repair-modal bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl">
       <header className="p-5 border-b flex items-center justify-between"><div><h2 className="font-extrabold text-lg">Check game files</h2><p className="text-sm text-slate-500">{title}</p></div><button disabled={starting} onClick={onClose} aria-label="Close repair"><X /></button></header>
       <div className="p-5 overflow-y-auto space-y-4">
         <p className="text-xs text-slate-500 break-all">{folder}</p><p className="text-xs text-slate-500">Choose the original downloaded repack containing setup.exe and archive files. Installed game files differ from the repack and cannot be repaired with this magnet.</p>

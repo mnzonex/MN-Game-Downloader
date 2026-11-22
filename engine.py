@@ -34,7 +34,7 @@ import traceback
 import signal
 from integrity import package_files, scan_report, write_manifest
 from repair_utils import find_save_path, find_repair_layout, files_complete, safe_file
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 
 try:
     import libtorrent as lt
@@ -966,7 +966,7 @@ if PARENT_PID and PARENT_PID > 0:
 
 def run_server():
     load_resume_data()
-    server = HTTPServer(('127.0.0.1', PORT), EngineAPI)
+    server = ThreadingHTTPServer(('127.0.0.1', PORT), EngineAPI)
     print(f"ENGINE_READY:{PORT}", flush=True)
     try:
         server.serve_forever()

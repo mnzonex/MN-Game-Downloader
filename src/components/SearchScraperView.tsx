@@ -1,28 +1,43 @@
 import { RepairModal } from './RepairModal';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { apiFetch } from '../services/api';
+import { buildUniversalSearchRequests, mergeUniversalSourceResults, validateUniversalSourceGames } from '../services/universalSearch';
 import { toast } from 'sonner';
 import {
-  Clock, Search, Loader2, Copy, ExternalLink, AlertCircle,
-  HardDrive, Info, ArrowLeft, Image as ImageIcon, Sparkles,
-  X, Gamepad2, RotateCcw, CheckCheck, Link2, Users, Download
+  Search, Loader2, Copy, ExternalLink, AlertCircle, HardDrive, Info,
+  ArrowLeft, Gamepad2, RotateCcw, Link2, Users, Download,
+  Package, Zap, Gift, Store, ChevronRight, ShieldCheck, CalendarClock, Image as ImageIcon, Globe2,
 } from 'lucide-react';
 import { GameItem, GameDownloadOption } from '../types';
+import { GAME_SOURCES, SOURCE_PAGE_SIZE, type SourceId, getSource } from '../sources/registry';
+import type { PerformanceMode } from './PerformanceBoostView';
+
+function captureProductEvent(eventName: string, properties: Record<string, unknown> = {}) {
+  try { (window as any).electron?.analytics?.capture(eventName, properties); } catch {}
+}
 
 interface LoadedDetails {
   downloads: GameDownloadOption[];
   partsCount: number;
   description?: string;
+  developer?: string;
+  releaseDate?: string;
   repackSizeStr?: string;
   originalSizeStr?: string;
   cover?: string;
   screenshots?: string[];
+  publisher?: string;
+  platforms?: string[];
+  storeLink?: string;
+  isFreeToPlay?: boolean;
+  offerStatus?: "free-now" | "upcoming";
+  offerStart?: string;
+  offerEnd?: string;
 }
-
-type SourceId = 'fitgirl' | 'erolabs';
 
 interface SourceFeed {
   games: GameItem[];
+  bufferedGames: GameItem[];
   page: number;
   hasMore: boolean;
   loading: boolean;
@@ -32,8 +47,18 @@ interface SourceFeed {
 }
 
 const emptyFeed = (): SourceFeed => ({
-  games: [], page: 1, hasMore: true, loading: false, loadingMore: false, loaded: false, error: null,
+  games: [], bufferedGames: [], page: 1, hasMore: true,
+  loading: false, loadingMore: false, loaded: false, error: null,
 });
+
+const sourceTone: Record<string, string> = {
+  emerald: "bg-emerald-500",
+  rose: "bg-rose-500",
+  indigo: "bg-indigo-500",
+  blue: "bg-sky-500",
+  violet: "bg-violet-500",
+  amber: "bg-amber-500",
+};
 
 const isSourceUnavailable = (message: string) => /\b(502|503|504)\b|bad gateway|upstream|could not reach|network error|timed?\s*out/i.test(message);
 
@@ -72,8 +97,12 @@ import { ScheduleDownloadModal } from './ScheduleDownloadModal';
 import { PreDownloadInspectModal } from './PreDownloadInspectModal';
 
 export const SearchScraperView: React.FC<{
+  active?: boolean;
+  performanceMode?: PerformanceMode;
   onSwitchToDownloads?: () => void;
-}> = ({ onSwitchToDownloads }) => {
+  mode?: "source" | "universal";
+}> = ({ active = true, performanceMode = 'off', onSwitchToDownloads, mode = "source" }) => {
+  const isUniversalSearch = mode === "universal";
   const [exactSizes, setExactSizes] = useState<Record<string, number>>({});
   const [repairing, setRepairing] = useState(false);
   const [repairSelection, setRepairSelection] = useState<{ magnet: string; folder: string; title: string; cover?: string } | null>(null);
@@ -92,23 +121,39 @@ export const SearchScraperView: React.FC<{
     idx: number;
   } | null>(null);
 
-  // Source selector: 'fitgirl' | 'erolabs'
-  const [source, setSource] = useState<SourceId>('fitgirl');
-  const sourceRef = React.useRef<SourceId>('fitgirl');
+  const [source, setSource] = useState<SourceId>("fitgirl");
+  const sourceRef = useRef<SourceId>("fitgirl");
+  const autoLoadSentinelRef = useRef<HTMLDivElement>(null);
   sourceRef.current = source;
-  const requestIdRef = React.useRef<Record<SourceId, number>>({ fitgirl: 0, erolabs: 0 });
-  const controllersRef = React.useRef<Record<SourceId, AbortController | null>>({ fitgirl: null, erolabs: null });
-  const [feeds, setFeeds] = useState<Record<SourceId, SourceFeed>>({
-    fitgirl: emptyFeed(),
-    erolabs: emptyFeed(),
+  const requestIdRef = React.useRef<Record<SourceId, number>>({
+    fitgirl: 0, erolabs: 0, gog: 0, steam: 0, epic: 0,
   });
-  const { games, loading, loadingMore, page, hasMore, error } = feeds[source];
-  const sourceLabel = source === 'erolabs' ? 'EroLabs' : 'FitGirl Repacks';
+  const controllersRef = React.useRef<Record<SourceId, AbortController | null>>({
+    fitgirl: null, erolabs: null, gog: null, steam: null, epic: null,
+  });
+  const [feeds, setFeeds] = useState<Record<SourceId, SourceFeed>>({
+    fitgirl: emptyFeed(), erolabs: emptyFeed(), gog: emptyFeed(), steam: emptyFeed(), epic: emptyFeed(),
+  });
+  const [universalFeed, setUniversalFeed] = useState<SourceFeed>(() => ({ ...emptyFeed(), hasMore: false }));
+  const [universalUnavailableSources, setUniversalUnavailableSources] = useState<string[]>([]);
+  const universalRequestIdRef = useRef(0);
+  const universalControllerRef = useRef<AbortController | null>(null);
+  const currentSource = getSource(source);
+  const sourceLabel = isUniversalSearch ? "all sources" : currentSource.label;
+  const activeFeed = isUniversalSearch ? universalFeed : feeds[source];
+  const { games, bufferedGames, loading, loadingMore, page, hasMore, error } = activeFeed;
 
-  useEffect(() => { void fetchFeed('', 1, false, 'fitgirl'); }, []);
+  useEffect(() => {
+    if (!active || isUniversalSearch) return;
+    const activeSource = sourceRef.current;
+    captureProductEvent('game_source_viewed', { source_id: activeSource });
+    const currentFeed = feeds[activeSource];
+    if (!currentFeed.loaded && !currentFeed.loading) void fetchFeed('', 1, false, activeSource);
+  }, [active, isUniversalSearch]);
 
   const handleSwitchSource = (newSource: SourceId) => {
     if (newSource === source) return;
+    captureProductEvent('game_source_viewed', { source_id: newSource });
     setSource(newSource);
     setSearchQuery('');
     setSelectedGame(null);
@@ -118,13 +163,13 @@ export const SearchScraperView: React.FC<{
 
   // Auto-fetch cover images for visible FitGirl cards
   useEffect(() => {
-    if (games.length === 0) return;
+    if (!active || isUniversalSearch || performanceMode !== 'off' || games.length === 0) return;
     const withoutCover = games.filter(g => !g.cover && !detailsLoaded[g.id]);
     if (withoutCover.length === 0) return;
 
     withoutCover.slice(0, 10).forEach(async (game) => {
       try {
-        if (game.siteBadge === 'EROLABS' || game.id.startsWith('ero-')) return;
+        if (game.sourceId !== 'fitgirl' && game.siteBadge !== 'FITGIRL') return;
 
         const res = await apiFetch(`/api/fitgirl/details?siteUrl=${encodeURIComponent(game.siteUrl)}`);
 
@@ -156,7 +201,7 @@ export const SearchScraperView: React.FC<{
         // ignore background fetch errors
       }
     });
-  }, [games]);
+  }, [games, active, performanceMode, isUniversalSearch]);
 
   const fetchFeed = async (query: string, pageNum: number = 1, append: boolean = false, src?: SourceId) => {
     const activeSource = src ?? source;
@@ -170,6 +215,7 @@ export const SearchScraperView: React.FC<{
       [activeSource]: {
         ...prev[activeSource],
         page: pageNum === 1 ? 1 : prev[activeSource].page,
+        bufferedGames: pageNum === 1 ? [] : prev[activeSource].bufferedGames,
         hasMore: pageNum === 1 ? true : prev[activeSource].hasMore,
         loading: pageNum === 1,
         loadingMore: pageNum > 1,
@@ -178,40 +224,60 @@ export const SearchScraperView: React.FC<{
     }));
 
     try {
+      const encodedQuery = encodeURIComponent(query.trim());
       let endpoint: string;
-      if (activeSource === 'erolabs') {
+      if (activeSource === "erolabs") {
         endpoint = query.trim()
-          ? `/api/erolabs/search?q=${encodeURIComponent(query.trim())}&page=${pageNum}`
+          ? `/api/erolabs/search?q=${encodedQuery}&page=${pageNum}`
           : `/api/erolabs/popular?page=${pageNum}`;
+      } else if (activeSource === "gog") {
+        endpoint = query.trim() ? `/api/gog/search?q=${encodedQuery}&page=${pageNum}` : `/api/gog/free?page=${pageNum}`;
+      } else if (activeSource === "steam") {
+        endpoint = query.trim() ? `/api/steam/search?q=${encodedQuery}&page=${pageNum}` : `/api/steam/free?page=${pageNum}`;
+      } else if (activeSource === "epic") {
+        endpoint = query.trim() ? `/api/epic/search?q=${encodedQuery}&page=${pageNum}` : `/api/epic/free?page=${pageNum}`;
       } else {
         endpoint = query.trim()
-          ? `/api/fitgirl/search?q=${encodeURIComponent(query.trim())}&page=${pageNum}`
+          ? `/api/fitgirl/search?q=${encodedQuery}&page=${pageNum}`
           : `/api/fitgirl/popular?page=${pageNum}`;
       }
 
-      const timeout = AbortSignal.timeout(20000);
+      const timeout = AbortSignal.timeout(30000);
       const res = await apiFetch(endpoint, { signal: AbortSignal.any([controller.signal, timeout]) });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Failed to load ${activeSource === 'fitgirl' ? 'FitGirl' : 'EroLabs'} games (${res.status})`);
-      const expectedBadge = activeSource === 'fitgirl' ? 'FITGIRL' : 'EROLABS';
+      if (!res.ok) throw new Error(data.error || `Failed to load ${getSource(activeSource).label} (${res.status})`);
+
+      const expectedBadge: Record<SourceId, string> = {
+        fitgirl: "FITGIRL", erolabs: "EROLABS", gog: "GOG", steam: "STEAM", epic: "EPIC",
+      };
       const responseGames = Array.isArray(data.games) ? data.games as GameItem[] : [];
-      const newGames = responseGames.filter(game => game.siteBadge === expectedBadge);
-      if (responseGames.length > 0 && newGames.length !== responseGames.length) {
-        throw new Error('This source returned games from another catalog. Please retry.');
+      const validGames = responseGames.filter((game) =>
+        game.siteBadge === expectedBadge[activeSource] &&
+        (game.sourceId === undefined || game.sourceId === activeSource)
+      );
+      if (responseGames.length > 0 && validGames.length !== responseGames.length) {
+        throw new Error("This source returned games from another catalog. Please retry.");
       }
+
       if (reqId !== requestIdRef.current[activeSource]) return;
+      const firstBatch = validGames.slice(0, SOURCE_PAGE_SIZE);
+      const buffered = validGames.slice(SOURCE_PAGE_SIZE);
+      const upstreamHasMore = typeof data.hasMore === "boolean"
+        ? data.hasMore
+        : validGames.length >= SOURCE_PAGE_SIZE;
+
       setFeeds(prev => {
         const current = prev[activeSource];
-        const existingUrls = new Set(current.games.map(game => game.siteUrl));
-        const additions = newGames.filter(game => !existingUrls.has(game.siteUrl));
-        const nextGames = append ? [...current.games, ...additions] : newGames;
+        const existingIds = new Set(current.games.map(game => game.id));
+        const additions = firstBatch.filter(game => !existingIds.has(game.id));
         return {
           ...prev,
           [activeSource]: {
             ...current,
-            games: nextGames,
-            page: pageNum,
-            hasMore: newGames.length > 0 && (!append || additions.length > 0),
+            games: append ? [...current.games, ...additions] : firstBatch,
+            bufferedGames: append ? [...current.bufferedGames, ...buffered] : buffered,
+            page: Number(data.page || pageNum),
+            hasMore: buffered.length > 0 || upstreamHasMore,
             loading: false,
             loadingMore: false,
             loaded: true,
@@ -225,7 +291,7 @@ export const SearchScraperView: React.FC<{
         ...prev,
         [activeSource]: {
           ...prev[activeSource], loading: false, loadingMore: false, loaded: true,
-          error: err.message || 'Failed to fetch games',
+          error: err.message || "Failed to fetch games",
         },
       }));
     } finally {
@@ -233,36 +299,180 @@ export const SearchScraperView: React.FC<{
     }
   };
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    fetchFeed(searchQuery, 1, false, source);
+  const fetchUniversalFeed = async (query: string, pageNum: number = 1, append = false) => {
+    const normalizedQuery = query.trim().slice(0, 100);
+    if (!normalizedQuery) {
+      setUniversalFeed((prev) => ({ ...prev, error: "Enter a game or app name to search across all sources." }));
+      return;
+    }
+    if (pageNum === 1) universalControllerRef.current?.abort();
+    const controller = new AbortController();
+    universalControllerRef.current = controller;
+    const requestId = ++universalRequestIdRef.current;
+
+    if (pageNum === 1) setUniversalUnavailableSources([]);
+    setUniversalFeed((prev) => ({
+      ...prev,
+      page: pageNum === 1 ? 1 : prev.page,
+      bufferedGames: [],
+      hasMore: pageNum === 1 ? true : prev.hasMore,
+      loading: pageNum === 1,
+      loadingMore: pageNum > 1,
+      error: null,
+    }));
+
+    const requests = buildUniversalSearchRequests(normalizedQuery, pageNum);
+
+    try {
+      const timeout = AbortSignal.timeout(35000);
+      const outcomes = await Promise.allSettled(requests.map(async ({ sourceId, endpoint }) => {
+        const response = await apiFetch(endpoint, {
+          signal: AbortSignal.any([controller.signal, timeout]),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || getSource(sourceId).label + " returned HTTP " + response.status);
+        }
+
+        const rawGames = Array.isArray(data.games) ? data.games as GameItem[] : [];
+        const sourceGames = validateUniversalSourceGames(sourceId, rawGames);
+        return {
+          sourceId,
+          games: sourceGames,
+          hasMore: typeof data.hasMore === "boolean"
+            ? data.hasMore
+            : sourceGames.length >= SOURCE_PAGE_SIZE,
+        };
+      }));
+
+      if (requestId !== universalRequestIdRef.current || controller.signal.aborted) return;
+      const successful = outcomes
+        .filter((outcome): outcome is PromiseFulfilledResult<{ sourceId: SourceId; games: GameItem[]; hasMore: boolean }> => outcome.status === "fulfilled")
+        .map((outcome) => outcome.value);
+      const failedSourceIds = outcomes
+        .map((outcome, index) => outcome.status === "rejected" ? requests[index].sourceId : null)
+        .filter((sourceId): sourceId is SourceId => sourceId !== null);
+      const failedLabels = failedSourceIds.map((sourceId) => getSource(sourceId).shortLabel);
+      setUniversalUnavailableSources(failedLabels);
+
+      if (!successful.length) {
+        throw new Error("All search sources are currently unavailable. " + failedLabels.join(", "));
+      }
+
+      const additions = mergeUniversalSourceResults(successful);
+      setUniversalFeed((prev) => {
+        const existing = new Set(append ? prev.games.map((game) => (game.sourceId || "unknown") + ":" + game.id) : []);
+        const nextBatch = additions.filter((game) => !existing.has((game.sourceId || "unknown") + ":" + game.id));
+        return {
+          ...prev,
+          games: append ? [...prev.games, ...nextBatch] : nextBatch,
+          bufferedGames: [],
+          page: pageNum,
+          hasMore: successful.some((result) => result.hasMore),
+          loading: false,
+          loadingMore: false,
+          loaded: true,
+          error: null,
+        };
+      });
+    } catch (err: any) {
+      if (requestId !== universalRequestIdRef.current || controller.signal.aborted) return;
+      setUniversalFeed((prev) => ({
+        ...prev,
+        loading: false,
+        loadingMore: false,
+        loaded: true,
+        error: err.message || "Universal Search failed.",
+      }));
+    } finally {
+      if (universalControllerRef.current === controller) universalControllerRef.current = null;
+    }
   };
 
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop - clientHeight < 350 && hasMore && !loadingMore && !loading) {
-      const next = page + 1;
-      fetchFeed(searchQuery, next, true, source);
+  const handleLoadMore = () => {
+    if (!active || loading || loadingMore || !hasMore) return;
+    if (isUniversalSearch) {
+      void fetchUniversalFeed(searchQuery, page + 1, true);
+      return;
+    }
+    if (bufferedGames.length > 0) {
+      const batch = bufferedGames.slice(0, SOURCE_PAGE_SIZE);
+      const remaining = bufferedGames.slice(SOURCE_PAGE_SIZE);
+      setFeeds(prev => {
+        const current = prev[source];
+        const existingIds = new Set(current.games.map(game => game.id));
+        return {
+          ...prev,
+          [source]: {
+            ...current,
+            games: [...current.games, ...batch.filter(game => !existingIds.has(game.id))],
+            bufferedGames: remaining,
+            hasMore: remaining.length > 0 || current.hasMore,
+          },
+        };
+      });
+      return;
+    }
+    void fetchFeed(searchQuery, page + 1, true, source);
+  };
+
+  // Load the next batch as the user approaches the end of the current feed.
+  useEffect(() => {
+    if (!active || !hasMore || loading || loadingMore || !autoLoadSentinelRef.current) return;
+    const target = autoLoadSentinelRef.current;
+    const root = target.closest('.mn-browser-feed');
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some(entry => entry.isIntersecting)) handleLoadMore();
+    }, { root, rootMargin: '0px 0px 180px 0px', threshold: 0 });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [active, source, searchQuery, page, games.length, hasMore, loading, loadingMore, bufferedGames.length]);
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      captureProductEvent('game_search', {
+        search_scope: isUniversalSearch ? 'all_sources' : 'single_source',
+        source_id: isUniversalSearch ? undefined : source,
+      });
+      captureProductEvent('feature_used', { feature: 'game_search' });
+    }
+    if (isUniversalSearch) {
+      void fetchUniversalFeed(searchQuery, 1, false);
+    } else {
+      void fetchFeed(searchQuery, 1, false, source);
     }
   };
 
   const handleOpenGameDetails = async (game: GameItem) => {
+    captureProductEvent('feature_used', { feature: 'game_details' });
     setSelectedGame(game);
     if (detailsLoaded[game.id]) return;
 
     setFetchingDetails(true);
     try {
-      const isErolabs = game.siteBadge === 'EROLABS' || game.id.startsWith('ero-');
-      const detailEndpoint = isErolabs
+      const gameSource: SourceId = game.sourceId ||
+        (game.siteBadge === "EROLABS" || game.id.startsWith("ero-") ? "erolabs" :
+         game.siteBadge === "GOG" || game.id.startsWith("gog-") ? "gog" :
+         game.siteBadge === "STEAM" || game.id.startsWith("steam-") ? "steam" :
+         game.siteBadge === "EPIC" || game.id.startsWith("epic-") ? "epic" : "fitgirl");
+      const detailsId = game.id.replace(/^(gog|steam)-/, "");
+      const detailEndpoint = gameSource === "erolabs"
         ? `/api/erolabs/details?siteUrl=${encodeURIComponent(game.siteUrl)}`
-        : `/api/fitgirl/details?siteUrl=${encodeURIComponent(game.siteUrl)}`;
+        : gameSource === "gog"
+          ? `/api/gog/details?id=${encodeURIComponent(detailsId)}`
+          : gameSource === "steam"
+            ? `/api/steam/details?id=${encodeURIComponent(detailsId)}`
+            : gameSource === "epic"
+              ? `/api/epic/details?id=${encodeURIComponent(game.id)}`
+              : `/api/fitgirl/details?siteUrl=${encodeURIComponent(game.siteUrl)}`;
 
       const res = await apiFetch(detailEndpoint);
-      if (res.ok) {
+      if (!res.ok) throw new Error(`Details service returned HTTP ${res.status}`);
+      {
         const data = await res.json();
         // Do NOT overwrite existing clean cover images!
         if (data.cover && !game.cover) {
-          const gameSource: SourceId = (game.siteBadge === 'EROLABS' || game.id.startsWith('ero-')) ? 'erolabs' : 'fitgirl';
           setFeeds(prev => ({
             ...prev,
             [gameSource]: {
@@ -276,11 +486,20 @@ export const SearchScraperView: React.FC<{
           [game.id]: {
             downloads: data.downloads || [],
             partsCount: data.partsCount || 0,
-            description: data.description,
+            description: data.description || game.description,
+            developer: data.developer || game.developer,
+            publisher: data.publisher || game.publisher,
+            releaseDate: data.releaseDate || game.releaseDate,
+            platforms: data.platforms || [],
+            storeLink: data.storeLink || game.siteUrl,
+            isFreeToPlay: data.isFreeToPlay ?? game.isFreeToPlay,
+            offerStatus: data.offerStatus || game.offerStatus,
+            offerStart: data.offerStart || game.offerStart,
+            offerEnd: data.offerEnd || game.offerEnd,
             repackSizeStr: data.repackSizeStr,
             originalSizeStr: data.originalSizeStr,
             cover: game.cover || data.cover || '',
-            screenshots: data.screenshots || [],
+            screenshots: Array.isArray(data.screenshots) && data.screenshots.length ? data.screenshots : (game.screenshots || []),
           }
         }));
       }
@@ -313,6 +532,10 @@ export const SearchScraperView: React.FC<{
     }
     // FitGirl uses magnet links → show pre-download inspect modal (seeder check + file list)
     // EroLabs uses HTTP direct links → skip inspect, go straight to schedule modal
+    if (selectedGame?.sourceAction === 'official-store' || ['GOG', 'STEAM', 'EPIC'].includes(selectedGame?.siteBadge || '')) {
+      toast.info('This title is installed through its official store. Use the Open Store action on its details page.');
+      return;
+    }
     const isErolabs = selectedGame?.siteBadge === 'EROLABS' || source === 'erolabs';
     if (!isErolabs && rawUrl.startsWith('magnet:')) {
       setPendingInspectOption({ opt, idx });
@@ -330,7 +553,7 @@ export const SearchScraperView: React.FC<{
     setPendingInspectOption(null);
     setIsAdding(idx);
     try {
-      await addTorrent(rawUrl, selectedGame.title, selectedGame.cover || currentDetails?.cover);
+      await addTorrent(rawUrl, selectedGame.title, selectedGame.cover || currentDetails?.cover, selectedGame.sourceId || source);
       toast.success('Download started! 🚀');
       if (onSwitchToDownloads) {
         onSwitchToDownloads();
@@ -356,7 +579,7 @@ export const SearchScraperView: React.FC<{
 
     setIsAdding(idx);
     try {
-      await addTorrent(rawUrl, selectedGame.title, selectedGame.cover || currentDetails?.cover);
+      await addTorrent(rawUrl, selectedGame.title, selectedGame.cover || currentDetails?.cover, selectedGame.sourceId || source);
       toast.success('Download started! 🚀');
       if (onSwitchToDownloads) {
         onSwitchToDownloads();
@@ -374,7 +597,7 @@ export const SearchScraperView: React.FC<{
 
     setIsAdding(idx);
     try {
-      await scheduleTorrent(rawUrl, selectedGame.title, scheduledAtMs, selectedGame.cover || currentDetails?.cover);
+      await scheduleTorrent(rawUrl, selectedGame.title, scheduledAtMs, selectedGame.cover || currentDetails?.cover, selectedGame.sourceId || source);
       const timeStr = new Date(scheduledAtMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
       const dateStr = new Date(scheduledAtMs).toLocaleDateString([], { month: 'short', day: 'numeric' });
       toast.success(`Download scheduled for ${dateStr} at ${timeStr}! ⏰`, {
@@ -392,13 +615,22 @@ export const SearchScraperView: React.FC<{
 
   // ─── GAME DETAIL PAGE ────────────────────────────────────────────────────────
   if (selectedGame) {
+    const selectedSourceId: SourceId = selectedGame.sourceId ||
+      (selectedGame.siteBadge === "EROLABS" ? "erolabs" : selectedGame.siteBadge === "GOG" ? "gog" : selectedGame.siteBadge === "STEAM" ? "steam" : selectedGame.siteBadge === "EPIC" ? "epic" : "fitgirl");
+    const selectedSource = getSource(selectedSourceId);
+    const isOfficialStore = selectedSource.availability === "official-store";
     const displayCover = selectedGame.cover || currentDetails?.cover || '';
-    const displayRepackSize = exactSizes[selectedGame.id] ? formatSize(exactSizes[selectedGame.id]) : currentDetails?.repackSizeStr || selectedGame.repackSizeStr || selectedGame.size;
+    const displayRepackSize = isOfficialStore ? '' : exactSizes[selectedGame.id] ? formatSize(exactSizes[selectedGame.id]) : currentDetails?.repackSizeStr || selectedGame.repackSizeStr || selectedGame.size;
     const displayOriginalSize = currentDetails?.originalSizeStr || selectedGame.originalSizeStr;
-    const screenshots = currentDetails?.screenshots || selectedGame.screenshots || [];
+    const screenshots = currentDetails?.screenshots?.length ? currentDetails.screenshots : selectedGame.screenshots || [];
+    const offerStatus = currentDetails?.offerStatus || selectedGame.offerStatus;
+    const offerStart = currentDetails?.offerStart || selectedGame.offerStart;
+    const offerEnd = currentDetails?.offerEnd || selectedGame.offerEnd;
+    const formatOfferDate = (value?: string) => value ? new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+    const storeLabel = selectedSourceId === "gog" ? "Open on GOG" : selectedSourceId === "steam" ? "Open on Steam" : selectedSourceId === "epic" ? "Open on Epic Games" : selectedSource.label;
 
     return (
-      <div className="flex-1 flex flex-col h-full bg-slate-50 text-slate-900 overflow-y-auto">
+      <div className="mn-detail-page flex-1 flex flex-col h-full bg-slate-50 text-slate-900 overflow-y-auto">
         {/* Sticky Header */}
         <div className="p-4 px-6 border-b border-slate-200/80 bg-white/90 backdrop-blur-md sticky top-0 z-30 flex items-center justify-between shadow-xs">
           <button
@@ -408,12 +640,8 @@ export const SearchScraperView: React.FC<{
             <ArrowLeft className={`w-4 h-4 ${selectedGame.siteBadge === 'EROLABS' ? 'text-rose-600' : 'text-emerald-600'}`} />
             <span>Back to Store Feed</span>
           </button>
-          <span className={`text-xs border px-3.5 py-1 rounded-full font-bold ${
-            selectedGame.siteBadge === 'EROLABS'
-              ? 'bg-rose-50 text-rose-800 border-rose-200'
-              : 'bg-emerald-50 text-emerald-800 border-emerald-200'
-          }`}>
-            {selectedGame.siteBadge === 'EROLABS' ? 'EroLabs Game' : 'FitGirl Repack'}
+          <span className="text-xs border px-3.5 py-1.5 rounded-lg font-bold" style={{background:"var(--mn-accent-soft)",color:"var(--mn-accent-strong)",borderColor:"var(--mn-accent-border)"}}>
+            {selectedSource.label}
           </span>
         </div>
 
@@ -421,14 +649,14 @@ export const SearchScraperView: React.FC<{
         <div className="max-w-6xl mx-auto w-full p-6 space-y-8">
 
           {/* Hero Card */}
-          <div className="p-6 rounded-3xl bg-white border border-slate-200/90 flex flex-col md:flex-row gap-8 items-start shadow-md">
+          <div className={`mn-detail-hero p-6 rounded-3xl bg-white border border-slate-200/90 flex flex-col md:flex-row gap-8 items-start shadow-md ${selectedSourceId === 'fitgirl' ? 'mn-detail-hero-fitgirl' : ''}`}>
             {/* Cover */}
-            <div className="w-full md:w-64 h-80 bg-slate-100 rounded-2xl p-2 border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
+            <div className={`mn-detail-cover w-full md:w-64 h-80 bg-slate-100 rounded-2xl p-2 border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden shadow-inner ${selectedSourceId === 'fitgirl' ? 'mn-detail-cover-fitgirl' : ''}`}>
               {displayCover ? (
                 <img
                   src={displayCover}
                   alt={selectedGame.title}
-                  className="max-h-full max-w-full object-contain rounded-xl shadow-md"
+                  className={`max-h-full max-w-full object-contain rounded-xl shadow-md ${selectedSourceId === 'fitgirl' ? 'mn-detail-cover-image-fitgirl' : ''}`}
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center text-slate-400 gap-2 p-4 text-center">
@@ -467,16 +695,14 @@ export const SearchScraperView: React.FC<{
                   {selectedGame.title}
                 </h1>
 
-                <div className="flex items-center gap-3 text-xs text-slate-600 font-medium">
-                  <span>Category: <strong className="text-slate-900">{selectedGame.category || 'Game'}</strong></span>
-                  <span>•</span>
-                  <a
-                    href={selectedGame.siteUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-emerald-600 hover:underline font-bold flex items-center gap-1"
-                  >
-                    {selectedGame.siteBadge === 'EROLABS' ? 'EroLabs Page' : 'FitGirl Page'} <ExternalLink className="w-3.5 h-3.5" />
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 font-medium">
+                  <span>Category: <strong style={{color:"var(--mn-text)"}}>{selectedGame.category || "Game"}</strong></span>
+                  {(currentDetails?.developer || selectedGame.developer) && <span>Developer: <strong style={{color:"var(--mn-text)"}}>{currentDetails?.developer || selectedGame.developer}</strong></span>}
+                  {(currentDetails?.publisher || selectedGame.publisher) && <span>Publisher: <strong style={{color:"var(--mn-text)"}}>{currentDetails?.publisher || selectedGame.publisher}</strong></span>}
+                  {(currentDetails?.releaseDate || selectedGame.releaseDate) && <span>Released: <strong style={{color:"var(--mn-text)"}}>{currentDetails?.releaseDate || selectedGame.releaseDate}</strong></span>}
+                  {(currentDetails?.platforms || []).length > 0 && <span>Platforms: <strong style={{color:"var(--mn-text)"}}>{currentDetails?.platforms?.join(", ")}</strong></span>}
+                  <a href={currentDetails?.storeLink || selectedGame.siteUrl} target="_blank" rel="noopener noreferrer" className="font-bold flex items-center gap-1" style={{color:"var(--mn-accent)"}}>
+                    {storeLabel} <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 </div>
               </div>
@@ -485,13 +711,30 @@ export const SearchScraperView: React.FC<{
               <div className="pt-4 border-t border-slate-200 space-y-3">
                 <div className="flex items-center gap-2">
                   <Link2 className={`w-4 h-4 ${selectedGame.siteBadge === 'EROLABS' ? 'text-rose-600' : 'text-emerald-600'}`} />
-                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    {selectedGame.siteBadge === 'EROLABS' ? 'Direct Download Link' : 'Magnet Download Link'}
+                  <span className="text-xs font-bold uppercase tracking-wider" style={{color:"var(--mn-text-secondary)"}}>
+                    {isOfficialStore ? selectedSource.kind === "giveaway" ? "Official giveaway availability" : "Official store availability" : selectedSource.kind === "direct" ? "Direct download" : selectedSource.kind === "repack" ? "Torrent download" : "Download"}
                   </span>
                 </div>
 
                 {/* How to use tip */}
-                {selectedGame.siteBadge === 'EROLABS' ? (
+                {isOfficialStore ? (
+                  <div className="rounded-xl p-4 text-xs space-y-2" style={{background:"var(--mn-accent-soft)",border:"1px solid var(--mn-accent-border)",color:"var(--mn-text)"}}>
+                    <div className="flex items-center gap-2 font-bold">
+                      <ShieldCheck className="w-4 h-4" style={{color:"var(--mn-accent-strong)"}}/>
+                      {selectedSourceId === "epic" ? offerStatus === "upcoming" ? "Upcoming free offer" : "Free giveaway — claim before it ends" : selectedSourceId === "steam" ? "Free-to-play on Steam" : "Official GOG listing"}
+                    </div>
+                    {selectedSourceId === "epic" && (
+                      <div className="space-y-1">
+                        {offerStart && <p>{offerStatus === "upcoming" ? "Starts" : "Started"}: <strong>{formatOfferDate(offerStart)}</strong></p>}
+                        {offerEnd && <p>Offer ends: <strong>{formatOfferDate(offerEnd)}</strong></p>}
+                      </div>
+                    )}
+                    <p style={{color:"var(--mn-text-secondary)"}}>{selectedSource.installNote}</p>
+                    <a href={currentDetails?.storeLink || selectedGame.siteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-lg px-4 py-2 font-bold text-white" style={{background:"var(--mn-accent)"}}>
+                      {storeLabel} <ExternalLink className="w-3.5 h-3.5"/>
+                    </a>
+                  </div>
+                ) : selectedGame.siteBadge === 'EROLABS' ? (
                   <div className="flex items-start gap-2 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 font-medium">
                     <Info className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
                     <span>
@@ -517,7 +760,20 @@ export const SearchScraperView: React.FC<{
                 )}
 
                 {!fetchingDetails && currentDetails && currentDetails.downloads.length === 0 && (
-                  selectedGame.siteBadge === 'EROLABS' ? (
+                  isOfficialStore ? (
+                    <div className="rounded-xl p-4 space-y-2" style={{background:"var(--mn-panel)",border:"1px solid var(--mn-border)"}}>
+                      <p className="text-xs font-bold" style={{color:"var(--mn-text)"}}>{selectedSource.kind === "giveaway" ? "Claim through the Epic Games Store" : selectedSource.kind === "store" ? "Install through the official store" : "Official store installation"}</p>
+                      <p className="text-xs leading-5" style={{color:"var(--mn-text-secondary)"}}>{selectedSource.installNote}</p>
+                      {selectedSourceId === "epic" && offerEnd && <p className="text-xs font-semibold" style={{color:"var(--mn-accent-strong)"}}>Claim deadline: {formatOfferDate(offerEnd)}</p>}
+                      <a href={currentDetails?.storeLink || selectedGame.siteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold text-white" style={{background:"var(--mn-accent)"}}>{storeLabel}<ExternalLink className="w-3.5 h-3.5"/></a>
+                    </div>
+                  ) : selectedGame.siteBadge === 'GOG' ? (
+                    <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-900 text-xs space-y-2">
+                      <p className="font-bold">GOG account authorization is required for the installer.</p>
+                      <p>We can show the free-game listing and full public details here. To claim the title and access its signed installer link, open the official GOG store page and use your own GOG account.</p>
+                      <a href={selectedGame.siteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-indigo-700 hover:bg-indigo-800 text-white font-bold px-4 py-2">Open on GOG <ExternalLink className="w-3.5 h-3.5" /></a>
+                    </div>
+                  ) : selectedGame.siteBadge === 'EROLABS' ? (
                     <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs space-y-1">
                       <p className="font-bold">⚠️ No direct download files available for this game.</p>
                       <p className="text-amber-700">This is a paid web-store game on EroLabs (requires coins). You can click the <strong>EroLabs Page</strong> link above to open it in your browser.</p>
@@ -623,7 +879,7 @@ export const SearchScraperView: React.FC<{
                 Game Description
               </h3>
               <div className="text-sm text-slate-600 leading-relaxed font-medium">
-                {selectedGame.description}
+                {currentDetails?.description || selectedGame.description}
               </div>
             </div>
           )}
@@ -663,7 +919,7 @@ export const SearchScraperView: React.FC<{
           onClose={() => setPendingDownloadOption(null)}
           gameTitle={selectedGame.title}
           downloadOption={pendingDownloadOption?.opt || null}
-          siteBadge={selectedGame.siteBadge || (source === 'erolabs' ? 'EROLABS' : 'FITGIRL')}
+          siteBadge={selectedGame.siteBadge || (source === 'erolabs' ? 'EROLABS' : source === 'gog' ? 'GOG' : 'FITGIRL')}
           onConfirmNow={handleConfirmDownloadNow}
           onConfirmSchedule={handleConfirmSchedule}
         />
@@ -673,82 +929,94 @@ export const SearchScraperView: React.FC<{
 
   // ─── STORE FEED / GRID VIEW ─────────────────────────────────────────────────
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-50 text-slate-900 overflow-hidden">
+    <div className="mn-browser-layout">
+      <div className="mn-browser-main">
       {/* Search Bar */}
-      <div className="pt-8 pb-6 px-6 border-b border-slate-200/80 bg-gradient-to-b from-white to-slate-50/50 shadow-sm flex flex-col items-center">
-        <div className="w-full max-w-4xl mx-auto flex flex-col items-center gap-6">
-          <div className="flex flex-col items-center gap-3">
-            {/* Source Switcher */}
-            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-2xl border border-slate-200 shadow-inner">
-              <button
-                onClick={() => handleSwitchSource('fitgirl')}
-                className={`px-5 py-2 rounded-xl text-xs font-black uppercase tracking-wide transition-all cursor-pointer ${
-                  source === 'fitgirl'
-                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/25'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                🎮 FitGirl Repacks
-              </button>
-              <button
-                onClick={() => handleSwitchSource('erolabs')}
-                className={`px-5 py-2 rounded-xl text-xs font-black uppercase tracking-wide transition-all cursor-pointer ${
-                  source === 'erolabs'
-                    ? 'bg-rose-600 text-white shadow-md shadow-rose-600/25'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                🔥 EroLabs
-              </button>
+      <div className="mn-browser-toolbar">
+        <div className="mn-discover-header">
+          <div className="mn-discover-heading">
+            <div>
+              <p className="mn-eyebrow">{isUniversalSearch ? "ALL SOURCES · ONE SEARCH" : "GAME DISCOVERY"}</p>
+              <h1>{isUniversalSearch ? "Universal Search" : "Discover games"}</h1>
             </div>
-
-            <h1 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight text-center">
-              Global Games Database
-            </h1>
-            <p className="text-sm text-slate-500 font-medium text-center">
-              {source === 'erolabs'
-                ? 'Browse EroLabs games → Click to download with built-in engine'
-                : 'Browse FitGirl repacks → Click to download with built-in engine'}
-            </p>
           </div>
 
-          <form onSubmit={handleSearchSubmit} className="flex items-center gap-3 w-full">
-            <div className="relative flex-1 group">
-              <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-emerald-500 transition-colors" />
+          {!isUniversalSearch && <div className="mn-source-switcher">
+            <div className="mn-source-switcher-heading">
+              <span>Browse by source</span>
+              <span className="mn-source-switcher-group">{currentSource.group === "official" ? "Official stores" : "Community catalogs"}</span>
+            </div>
+            <div className="mn-source-tabs" role="group" aria-label="Choose game catalog">
+              {GAME_SOURCES.map((definition) => (
+                <button
+                  key={definition.id}
+                  type="button"
+                  className={`mn-source-tab ${source === definition.id ? "active" : ""}`}
+                  onClick={() => handleSwitchSource(definition.id)}
+                  aria-pressed={source === definition.id}
+                >
+                  <span className={`mn-source-tab-icon ${source === definition.id ? sourceTone[definition.badgeColor] : ""}`}>
+                    {definition.id === "fitgirl" ? <Package className="w-4 h-4" /> :
+                     definition.id === "erolabs" ? <Download className="w-4 h-4" /> :
+                     definition.id === "epic" ? <Gift className="w-4 h-4" /> :
+                     <Store className="w-4 h-4" />}
+                  </span>
+                  <span className="mn-source-tab-label">{definition.shortLabel}</span>
+                  <span className="mn-source-tab-check" aria-hidden="true">✓</span>
+                </button>
+              ))}
+            </div>
+          </div>}
+
+          {isUniversalSearch && (
+            <div className="mn-universal-sources" aria-label="Sources searched">
+              {GAME_SOURCES.map((definition) => (
+                <span className="mn-universal-source-chip" key={definition.id}>
+                  <span className={`mn-universal-source-dot ${sourceTone[definition.badgeColor] || "bg-slate-500"}`} />
+                  {definition.shortLabel}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={handleSearchSubmit} className="mn-search-row">
+            <div className="mn-search-field">
+              <Search className="w-5 h-5 shrink-0" />
               <input
-                type="text"
-                placeholder="Search for any game title (e.g. Cyberpunk, GTA V, Elden Ring)..."
+                type="search"
+                placeholder={isUniversalSearch ? "Search games across every connected source…" : `Search ${currentSource.shortLabel} games…`}
+                aria-label={isUniversalSearch ? "Search all connected game sources" : `Search games in ${currentSource.label}`}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-12 pr-5 py-3.5 bg-white border-2 border-slate-200 rounded-[16px] text-base text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all font-semibold shadow-sm hover:shadow-md hover:border-slate-300"
               />
-            </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-8 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-base rounded-[16px] transition-all shadow-md shadow-emerald-600/20 hover:shadow-lg hover:-translate-y-0.5 disabled:opacity-50 disabled:hover:translate-y-0 flex items-center gap-2 cursor-pointer shrink-0"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Searching...</span>
-                </>
-              ) : (
-                <span>Search</span>
+              {searchQuery && (
+                <button type="button" className="mn-search-clear" onClick={() => setSearchQuery("")} aria-label="Clear search">
+                  <RotateCcw className="w-4 h-4" />
+                </button>
               )}
+            </div>
+            <button type="submit" disabled={loading} className="mn-button-primary mn-search-submit">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              <span>{loading ? "Searching" : "Search"}</span>
             </button>
           </form>
+
         </div>
       </div>
 
       {/* Grid Feed */}
-      <div className="flex-1 overflow-y-auto p-6" onScroll={handleScroll}>
-        <div className="max-w-7xl mx-auto">
+      <div className="mn-browser-feed">
+        <div className="mn-discover-results max-w-7xl mx-auto">
+          {isUniversalSearch && universalUnavailableSources.length > 0 && universalFeed.loaded && !loading && (
+            <div className="mn-universal-partial-notice" role="status">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>Some sources could not be reached: {universalUnavailableSources.join(", ")}. Results from the other sources are still available.</span>
+            </div>
+          )}
           {loading && (
             <div className="flex flex-col items-center justify-center py-20 text-slate-500">
               <Loader2 className="w-10 h-10 text-emerald-600 animate-spin mb-4" />
-              <p className="text-lg font-bold text-slate-800">Loading Games Feed...</p>
-              <p className="text-xs text-slate-500 mt-1">Fetching from {source === 'erolabs' ? 'EroLabs' : 'FitGirl Repacks'}</p>
+              <p className="text-sm font-semibold text-slate-600">Loading games…</p>
             </div>
           )}
 
@@ -771,7 +1039,7 @@ export const SearchScraperView: React.FC<{
                 </div>
               </div>
               <button
-                onClick={() => fetchFeed(searchQuery, 1, false, source)}
+                onClick={() => isUniversalSearch ? fetchUniversalFeed(searchQuery, 1, false) : fetchFeed(searchQuery, 1, false, source)}
                 className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs rounded-xl transition-all flex items-center gap-2 shadow-xs cursor-pointer shrink-0"
               >
                 <RotateCcw className="w-4 h-4" />
@@ -780,41 +1048,65 @@ export const SearchScraperView: React.FC<{
             </div>
           )}
 
-          {!loading && !error && games.length === 0 && (
+          {!loading && !error && games.length === 0 && (isUniversalSearch ? universalFeed.loaded : true) && (
             <div className="text-center py-20 text-slate-500">
               <Gamepad2 className="w-12 h-12 text-emerald-300 mx-auto mb-4" />
-              <p className="text-lg font-bold text-slate-700">No games found</p>
-              <p className="text-sm mt-1 text-slate-500">Try searching another title</p>
+              <p className="text-lg font-bold text-slate-700">{isUniversalSearch ? "No matching games found" : "No games found"}</p>
+              <p className="text-sm mt-1 text-slate-500">Try another title or a shorter search phrase</p>
+            </div>
+          )}
+          {!loading && !error && isUniversalSearch && !universalFeed.loaded && games.length === 0 && (
+            <div className="mn-universal-empty">
+              <div className="mn-universal-empty-icon"><Globe2 className="w-7 h-7" /></div>
+              <h2>One search. Every source.</h2>
+              <p>Search every connected game catalog from one place.</p>
+              <div className="mn-universal-empty-sources">
+                {GAME_SOURCES.map((item) => <span key={item.id}>{item.shortLabel}</span>)}
+              </div>
             </div>
           )}
 
           {!loading && games.length > 0 && (
             <div>
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2.5">
-                  <span>{searchQuery ? `Results for "${searchQuery}"` : source === 'erolabs' ? 'Hot EroLabs Games' : 'Top Popular Repacks'}</span>
-                  <span className="text-xs bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full font-bold font-mono">
-                    {games.length} Games
-                  </span>
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-base font-bold text-slate-900">
+                  {searchQuery ? `Results for "${searchQuery}"` : isUniversalSearch ? "Universal results" : source === "epic" ? "Current and upcoming giveaways" : source === "steam" ? "Free-to-play games" : source === "gog" ? "Free games" : "Popular games"}
                 </h2>
               </div>
 
               {/* Cards Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-                {games.map((game) => (
-                  <div
+              <div className={`mn-games-grid ${!isUniversalSearch && ['fitgirl', 'gog'].includes(source) ? 'mn-games-grid-provider' : ''}`} key={isUniversalSearch ? "universal" : source}>
+                {games.map((game, index) => (
+                  <button
+                    type="button"
                     key={game.id}
                     onClick={() => handleOpenGameDetails(game)}
-                    className={`group bg-white border border-slate-200/90 ${game.siteBadge === 'EROLABS' ? 'hover:border-rose-400' : 'hover:border-emerald-500'} rounded-2xl overflow-hidden transition-all duration-300 hover:-translate-y-1 shadow-xs hover:shadow-md flex flex-col cursor-pointer`}
+                    aria-label={`Open details for ${game.title}`}
+                    className="mn-game-card mn-game-card-enter group flex flex-col text-left cursor-pointer w-full"
+                    style={{ "--mn-card-index": Math.min(index, 9) } as React.CSSProperties}
                   >
                     {/* Cover */}
-                    <div className="relative h-64 bg-slate-100/90 p-3 flex items-center justify-center border-b border-slate-200 overflow-hidden">
+                    <div className="mn-game-cover relative">
                       {game.cover ? (
                         <img
                           src={game.cover}
                           alt={game.title}
-                          className="max-h-full max-w-full object-contain rounded-lg shadow-sm group-hover:scale-105 transition-transform duration-300"
-                          onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                          loading="lazy"
+                          decoding="async"
+                          className="mn-game-cover-image"
+                          onLoad={(e) => {
+                            const image = e.currentTarget;
+                            const hasNaturalSize = image.naturalWidth > 0 && image.naturalHeight > 0;
+                            const ratio = hasNaturalSize
+                              ? (['fitgirl', 'gog'].includes(game.sourceId || source)
+                                  ? image.naturalWidth / image.naturalHeight
+                                  : Math.min(1.85, Math.max(0.58, image.naturalWidth / image.naturalHeight)))
+                              : 0.72;
+                            if (image.parentElement && Number.isFinite(ratio) && ratio > 0) {
+                              image.parentElement.style.aspectRatio = `${ratio.toFixed(4)} / 1`;
+                            }
+                          }}
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
                         />
                       ) : (
                         <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 gap-2 p-4 text-center">
@@ -823,30 +1115,32 @@ export const SearchScraperView: React.FC<{
                         </div>
                       )}
 
-                      {/* Source Badge (FITGIRL / EROLABS) */}
-                      <div className={`absolute top-3 left-3 ${game.siteBadge === 'EROLABS' ? 'bg-rose-600' : 'bg-emerald-600'} text-white text-[10px] font-extrabold px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm`}>
-                        {game.siteBadge || 'FITGIRL'}
+                      <div className={`mn-card-source-badge absolute top-3 left-3 ${sourceTone[getSource(game.sourceId || source).badgeColor] || "bg-slate-600"} text-white text-[10px] font-bold px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm`}>
+                        {game.siteBadge || "FITGIRL"}
                       </div>
 
                       {/* Multiplayer Badge */}
                       {isMultiplayer(game, detailsLoaded[game.id]) && (
-                        <div className="absolute top-3 right-3 bg-indigo-600/95 backdrop-blur-md text-white text-[10px] font-extrabold px-2 py-1 rounded-md uppercase tracking-wider shadow-sm flex items-center gap-1">
+                        <div className="mn-card-multiplayer-badge absolute top-3 right-3 bg-indigo-600/95 backdrop-blur-md text-white text-[10px] font-extrabold px-2 py-1 rounded-md uppercase tracking-wider shadow-sm flex items-center gap-1">
                           <Users className="w-3 h-3" />
                           <span>MULTIPLAYER</span>
                         </div>
                       )}
 
-                      {/* Size Badge */}
-                      {game.size && game.size !== 'Repack' && (
-                        <div className="absolute bottom-3 right-3 bg-white/95 text-emerald-800 text-xs font-bold px-2.5 py-1 rounded-lg border border-slate-200 backdrop-blur-md flex items-center gap-1.5 shadow-xs">
-                          <HardDrive className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>{exactSizes[game.id] ? formatSize(exactSizes[game.id]) : `Site estimate: ${game.size}`}</span>
+                      {game.sourceAction === "official-store" ? (
+                        <div className="mn-card-meta-pill absolute bottom-3 right-3 rounded-lg border px-2.5 py-1 text-[10px] font-bold shadow-sm" style={{background:"var(--mn-panel)",borderColor:"var(--mn-border)",color:"var(--mn-accent-strong)"}}>
+                          {game.siteBadge === "EPIC" ? game.offerStatus === "upcoming" ? "UPCOMING OFFER" : "FREE NOW" : game.siteBadge === "STEAM" ? "FREE-TO-PLAY" : "FREE GAME"}
+                        </div>
+                      ) : game.size && game.size !== "Repack" && (
+                        <div className="mn-card-meta-pill absolute bottom-3 right-3 rounded-lg border px-2.5 py-1 text-[10px] font-bold shadow-sm" style={{background:"var(--mn-panel)",borderColor:"var(--mn-border)",color:"var(--mn-text-secondary)"}}>
+                          <HardDrive className="w-3.5 h-3.5 inline mr-1.5" />
+                          {exactSizes[game.id] ? formatSize(exactSizes[game.id]) : game.size}
                         </div>
                       )}
                     </div>
 
                     {/* Card Footer */}
-                    <div className="p-4 flex-1 flex flex-col justify-between bg-white">
+                    <div className="mn-card-body flex-1">
                       <div>
                         <h3 className="font-bold text-slate-900 text-sm line-clamp-2 group-hover:text-emerald-700 transition-colors leading-snug">
                           {game.title}
@@ -856,39 +1150,30 @@ export const SearchScraperView: React.FC<{
                         </p>
                       </div>
 
-                      <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
-                        <span className={`${game.siteBadge === 'EROLABS' ? 'text-rose-600' : 'text-emerald-700'} font-bold flex items-center gap-1`}>
-                          {game.siteBadge === 'EROLABS' ? (
-                            <><HardDrive className="w-3.5 h-3.5" /><span>Windows Game</span></>
-                          ) : (
-                            <><Copy className="w-3.5 h-3.5" /><span>Magnet Link</span></>
-                          )}
+                      <div className="mt-4 pt-3 border-t flex items-center justify-between gap-2 text-[11px]" style={{borderColor:"var(--mn-border)"}}>
+                        <span className="font-semibold flex items-center gap-1.5 min-w-0" style={{color:"var(--mn-text-secondary)"}}>
+                          {game.sourceAction === "official-store" ? <Store className="w-3.5 h-3.5 shrink-0"/> : game.siteBadge === "EROLABS" ? <HardDrive className="w-3.5 h-3.5 shrink-0"/> : <Copy className="w-3.5 h-3.5 shrink-0"/>}
+                          <span className="truncate">
+                            {game.siteBadge === "EROLABS" ? "Direct download" : game.siteBadge === "FITGIRL" ? "Torrent repack" : game.siteBadge === "GOG" ? "GOG store" : game.siteBadge === "STEAM" ? "Steam client" : game.offerStatus === "upcoming" ? "Upcoming giveaway" : "Claim on Epic"}
+                          </span>
                         </span>
-                        <div className="flex items-center gap-1 text-slate-700 group-hover:text-emerald-700 font-bold transition-colors">
-                          <span>View Details</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </div>
+                        <span className="flex items-center gap-1 font-bold shrink-0" style={{color:"var(--mn-accent)"}}>
+                          <span>Details</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </span>
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
 
-              {loadingMore && (
-                <div className="flex items-center justify-center gap-3 py-10 my-4 text-emerald-700 font-bold text-sm bg-emerald-50/60 rounded-2xl border border-emerald-200/80">
-                  <Loader2 className="w-5 h-5 text-emerald-600 animate-spin" />
-                  <span>Loading more games...</span>
-                </div>
-              )}
-
-              {!hasMore && games.length > 0 && (
-                <div className="text-center py-8 text-xs font-semibold text-slate-400">
-                  ✓ End of results
-                </div>
-              )}
+              <div ref={autoLoadSentinelRef} className="mn-auto-load-sentinel" aria-live="polite">
+                {loadingMore && <Loader2 className="w-5 h-5 animate-spin" aria-label="Loading more games" />}
+              </div>
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   );

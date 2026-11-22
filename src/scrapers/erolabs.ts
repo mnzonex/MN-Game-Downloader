@@ -14,6 +14,14 @@ const DEFAULT_HEADERS = {
   'Origin': 'https://www.ero-labs.com',
 };
 
+function normalizeGamePageUrl(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl, `${BASE_URL}/en/`);
+    if (url.protocol !== 'https:' || !['www.ero-labs.com', 'ero-labs.com'].includes(url.hostname.toLowerCase()) || url.username || url.password) return null;
+    return url.toString();
+  } catch { return null; }
+}
+
 // ─── EroLabs API Response types ──────────────────────────────────────────────
 
 interface EroLabsGameListItem {
@@ -125,8 +133,8 @@ export async function fetchErolabsPopular(page: number = 1): Promise<GameItem[]>
           return null;
         }
 
-        const cleanUrlPath = g.gameUrl.replace(/^\/+/, '');
-        const gamePageUrl = cleanUrlPath.startsWith('http') ? cleanUrlPath : `${BASE_URL}/en/${cleanUrlPath}`;
+        const gamePageUrl = normalizeGamePageUrl(g.gameUrl);
+        if (!gamePageUrl) return null;
         const genres = g.gameGenre ? g.gameGenre.map((genre) => genre.name) : [];
         const winSize = extractWindowsSize(details);
 
@@ -193,8 +201,8 @@ export async function searchErolabs(query: string, page: number = 1): Promise<Ga
           return null;
         }
 
-        const cleanUrlPath = g.gameUrl.replace(/^\/+/, '');
-        const gamePageUrl = cleanUrlPath.startsWith('http') ? cleanUrlPath : `${BASE_URL}/en/${cleanUrlPath}`;
+        const gamePageUrl = normalizeGamePageUrl(g.gameUrl);
+        if (!gamePageUrl) return null;
         const genres = g.gameGenre ? g.gameGenre.map((genre) => genre.name) : [];
         const winSize = extractWindowsSize(details);
 
@@ -251,18 +259,23 @@ export async function fetchErolabsGameDetails(siteUrl: string): Promise<{
   };
 
   try {
-    // 1. Resolve game ID from URL
+    // Never let a scraper response redirect this server-side fetch to an arbitrary host.
+    const trustedPageUrl = normalizeGamePageUrl(siteUrl);
+    if (!trustedPageUrl) return fallback;
+
+    // 1. Resolve game ID from the validated official page URL
     let gameId: string | null = null;
-    const urlMatch = siteUrl.match(/[?&]id=(\d+)/i) || siteUrl.match(/\/game\/(\d+)/i);
+    const urlMatch = trustedPageUrl.match(/[?&]id=(\d+)/i) || trustedPageUrl.match(/\/game\/(\d+)/i);
     if (urlMatch) {
       gameId = urlMatch[1];
     } else {
-      const pageRes = await axios.get(siteUrl, {
+      const pageRes = await axios.get(trustedPageUrl, {
         headers: {
           'User-Agent': DEFAULT_HEADERS['User-Agent'],
           'Referer': `${BASE_URL}/en/games.html`,
         },
         timeout: 8000,
+        maxRedirects: 0,
       });
 
       const $ = cheerio.load(pageRes.data);

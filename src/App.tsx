@@ -10,16 +10,37 @@ import { Toaster, toast } from 'sonner';
 
 import { AppVersionInfo } from './types';
 import { apiFetch } from './services/api';
-import { listTorrents, getSettings } from './services/downloadApi';
+import { listTorrents } from './services/downloadApi';
 import { DownloadsView } from './components/DownloadsView';
-import { DefenderGuideModal } from './components/DefenderGuideModal';
 import { RateAppModal } from './components/RateAppModal';
+import { LibraryView } from './components/LibraryView';
+import { SystemHealthView } from './components/SystemHealthView';
+import { PerformanceBoostView, type PerformanceMode } from './components/PerformanceBoostView';
 
-const APP_VERSION = '1.2.5';
+const APP_VERSION = '1.2.30';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('search');
+
+  useEffect(() => {
+    try { (window as any).electron?.analytics?.capture('feature_used', { feature: activeTab }); } catch {}
+  }, [activeTab]);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const [performanceMode, setPerformanceMode] = useState<PerformanceMode>(() => {
+    try {
+      const saved = localStorage.getItem('mn_performance_mode');
+      return saved === 'game' || saved === 'system' ? saved : 'off';
+    } catch { return 'off'; }
+  });
+
+  useEffect(() => {
+    if (performanceMode === 'off') {
+      delete document.documentElement.dataset.mnBoostMode;
+    } else {
+      document.documentElement.dataset.mnBoostMode = performanceMode;
+    }
+    try { localStorage.setItem('mn_performance_mode', performanceMode); } catch {}
+  }, [performanceMode]);
   
   // Theme state — default Light. Persisted in localStorage.
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
@@ -27,12 +48,12 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (isDarkMode) {
-      document.body.classList.add('dark');
-    } else {
-      document.body.classList.remove('dark');
-    }
-    try { localStorage.setItem('mn_theme', isDarkMode ? 'dark' : 'light'); } catch {}
+    const theme = isDarkMode ? 'dark' : 'light';
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    document.documentElement.classList.toggle('dark', isDarkMode);
+    document.body.classList.toggle('dark', isDarkMode);
+    try { localStorage.setItem('mn_theme', theme); } catch {}
   }, [isDarkMode]);
   
   // Splash Screen State
@@ -58,9 +79,9 @@ export default function App() {
       }
     };
     pollCount();
-    const interval = setInterval(pollCount, 2000);
+    const interval = setInterval(pollCount, performanceMode === 'system' ? 15000 : 4000);
     return () => clearInterval(interval);
-  }, []);
+  }, [performanceMode]);
 
   // Background auto-updater state
   const [bgUpdateState, setBgUpdateState] = useState<'idle'|'checking'|'downloading'|'downloaded'|'error'>('idle');
@@ -71,10 +92,6 @@ export default function App() {
   const [bgUpdateVersion, setBgUpdateVersion] = useState<string>('');
   const [isInstallingUpdate, setIsInstallingUpdate] = useState<boolean>(false);
 
-  // Windows Defender Exclusion Onboarding Guide state
-  const [showDefenderGuide, setShowDefenderGuide] = useState<boolean>(false);
-  const [highlightExclusion, setHighlightExclusion] = useState<boolean>(false);
-
   const handleSuccessfulCompletion = (kind: 'download' | 'repair') => {
     const key = `mn_rate_prompt_${APP_VERSION}_${kind}`;
     try {
@@ -83,22 +100,6 @@ export default function App() {
     } catch {}
     setShowRateModal(true);
   };
-
-  useEffect(() => {
-    // Check if Defender exclusion is already configured
-    const checkDefenderStatus = async () => {
-      try {
-        const s = await getSettings();
-        if (s && s.defender_excluded !== '1') {
-          // Exclusion NOT allowed/granted yet -> show visual guide
-          setShowDefenderGuide(true);
-        }
-      } catch {}
-    };
-
-    const timer = setTimeout(checkDefenderStatus, 2400); // Trigger after splash screen
-    return () => clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     const splashTimer = setTimeout(() => {
@@ -157,9 +158,9 @@ export default function App() {
       } catch (_) {}
     };
     poll();
-    const interval = setInterval(poll, 5000);
+    const interval = setInterval(poll, performanceMode === 'system' ? 20000 : 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [performanceMode]);
 
   const handleRestartAndInstall = async () => {
     setIsInstallingUpdate(true);
@@ -209,7 +210,6 @@ export default function App() {
         isOnline={isOnline}
         versionInfo={versionInfo}
         onOpenAboutModal={() => setActiveTab('about')}
-        onOpenDonateModal={() => setShowDonationModal(true)}
       />
 
       {/* Main Workspace Body */}
@@ -223,16 +223,32 @@ export default function App() {
         />
 
         {/* View Router */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
-          <div className={`flex-1 flex flex-col overflow-hidden ${activeTab === 'search' ? '' : 'hidden'}`}>
-            <SearchScraperView onSwitchToDownloads={() => setActiveTab('downloads')} />
+        <main className="mn-app-shell flex-1 min-w-0 flex flex-col overflow-hidden">
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'search' ? '' : 'hidden'}`}>
+            <SearchScraperView active={activeTab === 'search'} performanceMode={performanceMode} onSwitchToDownloads={() => setActiveTab('downloads')} />
           </div>
 
-          <div className={`flex-1 flex flex-col overflow-hidden ${activeTab === 'downloads' ? '' : 'hidden'}`}>
-            <DownloadsView onSuccessfulCompletion={handleSuccessfulCompletion} />
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'universal' ? '' : 'hidden'}`}>
+            <SearchScraperView active={activeTab === 'universal'} mode="universal" performanceMode={performanceMode} onSwitchToDownloads={() => setActiveTab('downloads')} />
           </div>
 
-          <div className={`flex-1 flex flex-col overflow-hidden ${activeTab === 'about' ? '' : 'hidden'}`}>
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'library' ? '' : 'hidden'}`}>
+            <LibraryView active={activeTab === 'library'} />
+          </div>
+
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'downloads' ? '' : 'hidden'}`}>
+            <DownloadsView active={activeTab === 'downloads'} onSuccessfulCompletion={handleSuccessfulCompletion} />
+          </div>
+
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'boost' ? '' : 'hidden'}`}>
+            <PerformanceBoostView mode={performanceMode} onModeChange={setPerformanceMode} />
+          </div>
+
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'health' ? '' : 'hidden'}`}>
+            <SystemHealthView active={activeTab === 'health'} />
+          </div>
+
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'about' ? '' : 'hidden'}`}>
             <AboutAndSupportView
               versionInfo={versionInfo}
               onOpenDonateModal={() => setShowDonationModal(true)}
@@ -244,29 +260,11 @@ export default function App() {
             />
           </div>
 
-          <div className={`flex-1 flex flex-col overflow-hidden ${activeTab === 'settings' ? '' : 'hidden'}`}>
-            <SettingsView
-              isDarkMode={isDarkMode}
-              onToggleDark={setIsDarkMode}
-              highlightExclusion={highlightExclusion}
-            />
+          <div className={`mn-view-transition flex-1 min-w-0 flex flex-col overflow-hidden ${activeTab === 'settings' ? '' : 'hidden'}`}>
+            <SettingsView isDarkMode={isDarkMode} onToggleDark={setIsDarkMode} />
           </div>
         </main>
       </div>
-
-      <DefenderGuideModal
-        isOpen={showDefenderGuide}
-        onClose={() => setShowDefenderGuide(false)}
-        onGoToSettings={() => {
-          setShowDefenderGuide(false);
-          setActiveTab('settings');
-          setHighlightExclusion(true);
-        }}
-        onExclusionApplied={() => {
-          setShowDefenderGuide(false);
-          setHighlightExclusion(false);
-        }}
-      />
 
       <DonationModal 
         isOpen={showDonationModal} 

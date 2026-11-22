@@ -18,11 +18,11 @@ export async function inspectTorrent(magnetLink: string, timeout: number = 8): P
 
 }
 
-export async function addTorrent(magnetLink: string, gameName?: string, coverUrl?: string): Promise<{ id: string; name: string }> {
+export async function addTorrent(magnetLink: string, gameName?: string, coverUrl?: string, sourceId?: string): Promise<{ id: string; name: string }> {
   const res = await apiFetch('/api/torrent/add', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ magnetLink, gameName, coverUrl }),
+    body: JSON.stringify({ magnetLink, gameName, coverUrl, sourceId }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Unknown error' }));
@@ -36,11 +36,12 @@ export async function scheduleTorrent(
   gameName: string,
   scheduledAt: number,
   coverUrl?: string,
+  sourceId?: string,
 ): Promise<{ id: string; name: string; scheduledAt: number }> {
   const res = await apiFetch('/api/torrent/schedule', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ magnetLink, gameName, scheduledAt, coverUrl }),
+    body: JSON.stringify({ magnetLink, gameName, scheduledAt, coverUrl, sourceId }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Unknown error' }));
@@ -118,23 +119,10 @@ export async function saveSettings(settings: Partial<DownloadSettings>): Promise
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
   });
-  if (!res.ok) throw new Error('Failed to save settings');
-}
-
-export async function addDefenderExclusion(): Promise<{ ok: boolean; paths?: string[]; error?: string }> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const electron = (window as any).electron;
-  if (electron?.addDefenderExclusion) {
-    return electron.addDefenderExclusion();
-  }
-  const res = await apiFetch('/api/settings/add-exclusion', {
-    method: 'POST',
-  });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Failed to add exclusion' }));
-    throw new Error(err.error || 'Failed to add exclusion');
+    const error = await res.json().catch(() => ({ error: `Settings save failed (HTTP ${res.status})` }));
+    throw new Error(error.error || `Settings save failed (HTTP ${res.status})`);
   }
-  return res.json();
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

@@ -66,7 +66,7 @@ export async function fetchFitGirlPopular(page: number = 1): Promise<GameItem[]>
                 siteUrl: href,
                 category: 'Lossless Repack',
                 description: 'Click to load full game details and torrent download.',
-                releaseDate: new Date().toLocaleDateString(),
+                releaseDate: '',
                 screenshots: cover ? [cover] : [],
                 downloads: []
               });
@@ -137,7 +137,7 @@ export async function fetchFitGirlPopular(page: number = 1): Promise<GameItem[]>
         siteUrl,
         category: 'Lossless Repack',
         description: text.slice(0, 500) + '...',
-        releaseDate: new Date().toLocaleDateString(),
+        releaseDate: '',
         screenshots: cover ? [cover] : [],
         downloads: []
       });
@@ -202,7 +202,7 @@ export async function searchFitGirl(query: string, page: number = 1): Promise<Ga
         siteUrl,
         category: 'Lossless Repack',
         description: text.slice(0, 500) + '...',
-        releaseDate: new Date().toLocaleDateString(),
+        releaseDate: '',
         screenshots: cover ? [cover] : [],
         downloads: []
       });

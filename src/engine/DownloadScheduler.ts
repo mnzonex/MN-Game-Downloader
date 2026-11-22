@@ -80,6 +80,7 @@ class DownloadScheduler {
     magnetLink: string,
     gameName: string,
     scheduledAt: number,
+    sourceId?: string,
   ): { id: string; name: string; scheduledAt: number } {
     // Generate a deterministic ID (same logic as engines)
     const id = magnetLink.startsWith('magnet:')
@@ -117,6 +118,7 @@ class DownloadScheduler {
       seeds: 0,
       eta_secs: -1,
       scheduled_at: scheduledAt,
+      source_id: sourceId || null,
     });
 
     console.log(`[Scheduler] Scheduled "${cleanName}" for ${new Date(scheduledAt).toISOString()}`);
@@ -195,13 +197,21 @@ class DownloadScheduler {
       // Torrent download
       const eng = await getEngine();
       // Update the row's status to downloading before calling engine
-      dbUpdateTorrentStats(row.id, { status: 'downloading', error_msg: null });
+      dbUpdateTorrentStats(row.id, { status: 'downloading', error_msg: null, started_at: row.started_at || Date.now() });
       await eng.addFromSchedule(row.magnet, row.id, row.name, tempDir, destPath);
+      try {
+        const capture = (globalThis as any).mnAnalyticsCapture;
+        if (typeof capture === 'function') capture('download_started', { game_name: row.name, source_id: row.source_id || undefined, download_type: 'torrent', scheduled: true });
+      } catch { /* Analytics must not affect queue execution. */ }
     } else if (row.magnet.startsWith('http://') || row.magnet.startsWith('https://')) {
       // HTTP direct download
       const httpEng = await getHttpEngine();
-      dbUpdateTorrentStats(row.id, { status: 'downloading', error_msg: null });
+      dbUpdateTorrentStats(row.id, { status: 'downloading', error_msg: null, started_at: row.started_at || Date.now() });
       httpEng.resumeById(row.id, row.magnet, row.name, tempDir, destPath);
+      try {
+        const capture = (globalThis as any).mnAnalyticsCapture;
+        if (typeof capture === 'function') capture('download_started', { game_name: row.name, source_id: row.source_id || undefined, download_type: 'http', scheduled: true });
+      } catch { /* Analytics must not affect queue execution. */ }
     }
   }
 

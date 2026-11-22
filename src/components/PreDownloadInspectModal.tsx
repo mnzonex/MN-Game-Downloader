@@ -82,13 +82,13 @@ export const PreDownloadInspectModal: React.FC<PreDownloadInspectModalProps> = (
   const isHealthy = seedsCount > 0 || (inspectData?.has_metadata && peersCount > 0);
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="mn-pre-download-backdrop fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4">
       <div
-        className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
+        className="mn-pre-download-modal bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="p-5 border-b border-slate-100 flex items-start justify-between bg-gradient-to-r from-emerald-50/70 via-slate-50 to-white">
+        <div className="mn-pre-download-header p-5 border-b border-slate-100 flex items-start justify-between bg-gradient-to-r from-emerald-50/70 via-slate-50 to-white">
           <div className="space-y-1 pr-3">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-emerald-600 text-white flex items-center gap-1 shadow-xs">
@@ -114,7 +114,7 @@ export const PreDownloadInspectModal: React.FC<PreDownloadInspectModalProps> = (
         {/* Modal Body */}
         <div className="p-6 space-y-5 overflow-y-auto max-h-[72vh]">
           {/* Status Steps */}
-          <div className="space-y-3 bg-slate-50/80 p-4 rounded-2xl border border-slate-200/80">
+          <div className="mn-pre-download-steps space-y-3 bg-slate-50/80 p-4 rounded-2xl border border-slate-200/80">
             {/* Step 1: Metadata */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
@@ -234,7 +234,7 @@ export const PreDownloadInspectModal: React.FC<PreDownloadInspectModalProps> = (
                     </button>
 
                     {showFileList && (
-                      <div className="mt-2 p-2 bg-white/90 rounded-xl border border-emerald-200 max-h-40 overflow-y-auto space-y-1 text-[11px] font-mono shadow-inner">
+                      <div className="mn-pre-download-file-list mt-2 p-2 bg-white/90 rounded-xl border border-emerald-200 max-h-40 overflow-y-auto space-y-1 text-[11px] font-mono shadow-inner">
                         {inspectData.files.map((f, i) => (
                           <div key={i} className="flex items-center justify-between text-slate-700 py-0.5 border-b border-slate-100 last:border-0">
                             <span className="truncate pr-2" title={f.name}>{f.name}</span>
@@ -266,7 +266,7 @@ export const PreDownloadInspectModal: React.FC<PreDownloadInspectModalProps> = (
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 px-6 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between gap-3">
+        <div className="mn-pre-download-footer p-4 px-6 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between gap-3">
           <button
             type="button"
             onClick={onClose}

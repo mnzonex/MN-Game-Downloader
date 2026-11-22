@@ -2,12 +2,15 @@ appId: com.mnzonex.gamedownloader
 productName: MN Game Downloader
 artifactName: "MN-Game-Downloader-Setup.${ext}"
 directories:
-  output: release
+  output: release-v1.2.30
 files:
   - dist/**/*
   - main.cjs
+  - analytics-core.cjs
+  - posthog-config.cjs
   - desktop-actions.cjs
   - installed-games.cjs
+  - system-health-metrics.cjs
   - preload.cjs
   - package.json
   - icon.ico

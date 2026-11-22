@@ -39,7 +39,7 @@ const server = http.createServer((req, res) => {
       else if (url.endsWith('/library')) data = libraryGames;
       else if (url.endsWith('/library/scan')) { scanCalls++; data = { games: libraryGames, candidates: [{ token: 'candidate', name: 'Found package', folder: 'C:\\FixtureLibrary' }], scanned: 1, limited: false }; }
       else if (url.includes('/list')) data = repaired && !completed ? [{ id: 'repair-task', name: 'Repair Test Game', taskKind: 'repair', status: 'repairing', size: 2147483648, progress: 0.5, downloadSpeed: 1024, peers: 2, seeds: 1, etaSecs: 4, addedAt: 1, hidden: false, files: [{ name: 'Game/data.bin', size: 1024, downloaded: 512, status: 'Downloading' }] }] : [];
-      else if (url.includes('/settings')) data = { defender_excluded: '1' };
+      else if (url.includes('/settings')) data = {};
       await route.fulfill({ json: data, headers: { 'Access-Control-Allow-Origin': '*' } });
     });
     await page.goto('http://127.0.0.1:' + server.address().port);
