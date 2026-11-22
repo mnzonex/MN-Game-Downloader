@@ -66,6 +66,22 @@ jobs:
       - name: Verify offline PostHog queue persistence
         run: npm run test:offline-queue
 
+      - name: Ensure the version tag exists before publishing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          $tag = "v$version"
+          $existing = git ls-remote --tags origin "refs/tags/$tag"
+          if (-not $existing) {
+            git tag $tag $env:GITHUB_SHA
+            git push origin "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to push release tag $tag" }
+            Write-Host "Created immutable release tag $tag at $env:GITHUB_SHA"
+          } else {
+            Write-Host "Release tag $tag already exists; keeping the existing immutable tag."
+          }
       - name: Build the application and publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
