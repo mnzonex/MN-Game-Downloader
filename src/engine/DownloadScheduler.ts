@@ -201,7 +201,7 @@ class DownloadScheduler {
       await eng.addFromSchedule(row.magnet, row.id, row.name, tempDir, destPath);
       try {
         const capture = (globalThis as any).mnAnalyticsCapture;
-        if (typeof capture === 'function') capture('download_started', { game_name: row.name, source_id: row.source_id || undefined, download_type: 'torrent', scheduled: true });
+        if (typeof capture === 'function') capture('download_started', { attempt_id: row.attempt_id || undefined, game_name: row.name, source_id: row.source_id || undefined, download_type: 'torrent', scheduled: true });
       } catch { /* Analytics must not affect queue execution. */ }
     } else if (row.magnet.startsWith('http://') || row.magnet.startsWith('https://')) {
       // HTTP direct download
@@ -210,7 +210,7 @@ class DownloadScheduler {
       httpEng.resumeById(row.id, row.magnet, row.name, tempDir, destPath);
       try {
         const capture = (globalThis as any).mnAnalyticsCapture;
-        if (typeof capture === 'function') capture('download_started', { game_name: row.name, source_id: row.source_id || undefined, download_type: 'http', scheduled: true });
+        if (typeof capture === 'function') capture('download_started', { attempt_id: row.attempt_id || undefined, game_name: row.name, source_id: row.source_id || undefined, download_type: 'http', scheduled: true });
       } catch { /* Analytics must not affect queue execution. */ }
     }
   }

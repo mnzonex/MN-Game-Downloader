@@ -289,7 +289,7 @@ function shutdownEngine() {
       (res) => { res.resume(); res.on('end', resolve); }
     );
     req.on('error', resolve);
-    req.setTimeout(20000, () => { req.destroy(); resolve(); });
+    req.setTimeout(30000, () => { req.destroy(); resolve(); });
     req.end();
   });
 }
@@ -505,10 +505,11 @@ app.on('ready', async () => {
   }
 
   try {
-    // In development the concurrently-started server owns this port; packaged builds start it here.
+    // Initialize durable analytics before packaged engines restore interrupted downloads.
+    // In development the concurrently-started server already owns this port.
+    await startAnalytics();
     if (app.isPackaged) startServer();
     await waitForApiHealth();
-    await startAnalytics();
     createWindow();
   } catch (error) {
     console.error('[Main] Local API did not become ready:', error);

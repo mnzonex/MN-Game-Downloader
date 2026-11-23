@@ -144,9 +144,11 @@ export async function recordCompletion(row: any, manifestPath?: string) {
       const capture = (globalThis as any).mnAnalyticsCapture;
       if (typeof capture === 'function') {
         capture('download_completed', {
+          attempt_id: row.attempt_id || undefined,
           game_name: context.name || row.name,
           source_id: row.source_id || undefined,
           download_type: typeof row.magnet === 'string' && row.magnet.startsWith('magnet:') ? 'torrent' : 'http',
+          completion_source: typeof row.magnet === 'string' && row.magnet.startsWith('magnet:') ? 'torrent' : 'http',
           bytes: Math.max(0, Number(row.size) || 0),
           duration_ms: Math.max(0, Date.now() - (Number(row.started_at) || Number(row.added_at) || Date.now())),
         });

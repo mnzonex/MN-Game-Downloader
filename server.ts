@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import cors from 'cors';
 import axios from 'axios';
 import { fetchFitGirlPopular, searchFitGirl, fetchFitGirlGameDetails } from './src/scrapers/fitgirl';
@@ -14,22 +15,11 @@ import { GAME_SOURCES } from './src/sources/registry';
 import { engine } from './src/engine/TorrentEngine';
 import { httpEngine } from './src/engine/HttpEngine';
 import { downloadScheduler } from './src/engine/DownloadScheduler';
-import { dbGetSettings, dbSetSetting, dbGetSetting, dbGetTorrent } from './src/engine/db';
+import { dbGetSettings, dbSetSetting, dbGetSetting, dbGetTorrent, dbUpdateTorrentStats, dbCaptureDownloadEvent } from './src/engine/db';
 import { isNewerVersion } from './version-utils';
 
 function captureTrackedEvent(eventName: string, row: any, extra: Record<string, unknown> = {}) {
-  try {
-    const capture = (globalThis as any).mnAnalyticsCapture;
-    if (typeof capture !== 'function' || !row || row.task_kind === 'repair') return;
-    capture(eventName, {
-      game_name: row.name,
-      source_id: row.source_id || undefined,
-      download_type: typeof row.magnet === 'string' && row.magnet.startsWith('magnet:') ? 'torrent' : 'http',
-      bytes: Math.max(0, Math.floor((Number(row.size) || 0) * Math.max(0, Math.min(1, Number(row.progress) || 0)))),
-      duration_ms: Math.max(0, Date.now() - (Number(row.started_at) || Number(row.added_at) || Date.now())),
-      ...extra,
-    });
-  } catch { /* Tracking cannot change a download action's outcome. */ }
+  dbCaptureDownloadEvent(eventName, row, extra);
 }
 
 function captureTrackedFailure(gameName: unknown, sourceId: unknown, magnetLink: unknown, error: unknown) {
@@ -45,12 +35,14 @@ function captureTrackedFailure(gameName: unknown, sourceId: unknown, magnetLink:
       /hash|checksum|verify|corrupt/.test(message) ? 'verification' : 'engine';
     const validSource = GAME_SOURCES.some(source => source.id === sourceId) ? sourceId : undefined;
     capture('download_failed', {
+      attempt_id: crypto.randomUUID(),
       game_name: gameName,
       source_id: validSource,
       download_type: typeof magnetLink === 'string' && magnetLink.startsWith('magnet:') ? 'torrent' : 'http',
       bytes: 0,
       duration_ms: 0,
       error_category: errorCategory,
+      error_stage: 'request_start',
     });
   } catch { /* Tracking cannot change a failed request's outcome. */ }
 }
@@ -140,7 +132,7 @@ async function startServer() {
 
   // API: Version Check & Update Enforcement
   app.get('/api/version', async (req, res) => {
-    let currentVersion = process.env.MN_APP_VERSION || '1.2.32';
+    let currentVersion = process.env.MN_APP_VERSION || '1.2.33';
     try {
       const pathsToCheck = [
         path.join(process.cwd(), 'package.json'),
@@ -609,10 +601,27 @@ async function startServer() {
       const row = dbGetTorrent(id);
       if (row && (row.magnet.startsWith('http') || row.id.length > 40)) {
         httpEngine.resume(id);
+        if (row) captureTrackedEvent('download_resume_requested', row, { resume_stage: 'manual_http' });
       } else {
-        await engine.resume(id);
+        try {
+          await engine.resume(id);
+          if (row) {
+            captureTrackedEvent('download_resume_requested', row, { resume_stage: 'manual_torrent' });
+            captureTrackedEvent('download_resumed', row, { resume_stage: 'manual_torrent' });
+          }
+        } catch (error: any) {
+          if (row) {
+            const message = String(error?.message || error || '').toLowerCase();
+            const isNetworkError = /timeout|timed out|econn|network|socket|dns|offline/.test(message);
+            captureTrackedEvent('download_resume_failed', row, {
+              resume_stage: 'manual_torrent',
+              error_category: isNetworkError ? 'network' : 'engine',
+              error_stage: isNetworkError ? 'network_request' : 'engine',
+            });
+          }
+          throw error;
+        }
       }
-      if (row) captureTrackedEvent('download_resumed', row);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -650,6 +659,10 @@ async function startServer() {
         res.json(result);
       } else {
         await engine.retry(id);
+        const retryStartedAt = Date.now();
+        dbUpdateTorrentStats(id, { attempt_id: crypto.randomUUID(), started_at: retryStartedAt, progress: 0 });
+        const retriedRow = dbGetTorrent(id);
+        if (retriedRow) captureTrackedEvent('download_started', retriedRow);
         res.json({ ok: true });
       }
     } catch (e: any) {
@@ -726,8 +739,9 @@ async function startServer() {
   });
 
   // Graceful shutdown hook (called by Electron main before quit)
-  app.post('/api/engine/shutdown', async (req, res) => {
+  app.post('/api/engine/shutdown', async (_req, res) => {
     downloadScheduler.stop();
+    await httpEngine.shutdown();
     await engine.shutdown();
     res.json({ ok: true });
   });
@@ -766,6 +780,8 @@ async function startServer() {
   const handleGracefulExit = async (signal: string) => {
     console.log(`[Server] Received ${signal}. Shutting down engine...`);
     try {
+      downloadScheduler.stop();
+      await httpEngine.shutdown();
       await engine.shutdown();
     } catch { /* ignore */ }
     process.exit(0);

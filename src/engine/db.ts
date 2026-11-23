@@ -6,6 +6,7 @@
 import path from 'path';
 import fs from 'fs';
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 
 // ── Path resolution ────────────────────────────────────────────────────────────
 function getDataDir(): string {
@@ -78,6 +79,14 @@ function initSchema(db: Database.Database) {
       db.exec(`ALTER TABLE torrents ADD COLUMN started_at INTEGER`);
       console.log('[DB] Migrated: added started_at column to torrents table.');
     }
+    if (!cols.some(c => c.name === 'attempt_id')) {
+      db.exec(`ALTER TABLE torrents ADD COLUMN attempt_id TEXT`);
+      console.log('[DB] Migrated: added attempt_id column to torrents table.');
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_torrents_attempt_id ON torrents(attempt_id)`);
+    const missingAttempts = db.prepare(`SELECT id FROM torrents WHERE attempt_id IS NULL OR attempt_id = ''`).all() as { id: string }[];
+    const setAttemptId = db.prepare(`UPDATE torrents SET attempt_id = ? WHERE id = ?`);
+    for (const row of missingAttempts) setAttemptId.run(crypto.randomUUID(), row.id);
   } catch (e) {
     console.error('[DB] Migration check failed:', e);
   }
@@ -127,6 +136,7 @@ export interface TorrentRow {
   task_kind?: string;
   source_id?: string | null;
   started_at?: number | null;
+  attempt_id?: string | null;
 }
 
 export type TorrentStatus =
@@ -158,6 +168,7 @@ export function dbInsertTorrent(row: Omit<TorrentRow, 'added_at' | 'completed_at
     started_at: row.status === 'downloading' ? Date.now() : null,
     ...row,
   });
+  db.prepare('UPDATE torrents SET attempt_id = ? WHERE id = ?').run(row.attempt_id || crypto.randomUUID(), row.id);
   const storedRow = dbGetTorrent(row.id);
   if (storedRow?.task_kind !== 'repair') {
     if (storedRow?.status === 'downloading') {
@@ -168,21 +179,36 @@ export function dbInsertTorrent(row: Omit<TorrentRow, 'added_at' | 'completed_at
   }
 }
 
-function captureDownloadAnalytics(event: string, row: TorrentRow, extra: Record<string, unknown> = {}) {
+export function dbCaptureDownloadEvent(event: string, row: TorrentRow, extra: Record<string, unknown> = {}) {
   try {
     const capture = (globalThis as any).mnAnalyticsCapture;
-    if (typeof capture !== 'function' || row.task_kind === 'repair') return;
+    if (typeof capture !== 'function' || !row || row.task_kind === 'repair') return false;
     const elapsed = Math.max(0, Date.now() - (row.started_at || row.added_at));
-    const properties = {
+    capture(event, {
+      attempt_id: row.attempt_id || undefined,
       game_name: row.name,
       source_id: row.source_id || undefined,
       download_type: typeof row.magnet === 'string' && row.magnet.startsWith('magnet:') ? 'torrent' : 'http',
       bytes: Math.max(0, Math.floor((row.size || 0) * Math.max(0, Math.min(1, row.progress || 0)))),
       duration_ms: elapsed,
       ...extra,
-    };
-    capture(event, properties);
-  } catch { /* Telemetry must never affect download state. */ }
+    });
+    return true;
+  } catch { return false; /* Telemetry must never affect download state. */ }
+}
+
+function captureDownloadAnalytics(event: string, row: TorrentRow, extra: Record<string, unknown> = {}) {
+  dbCaptureDownloadEvent(event, row, extra);
+}
+
+function classifyDownloadStage(message: unknown): string {
+  const text = String(message || '').toLowerCase();
+  if (/enospc|disk full|not enough space|no space left|eacces|eperm|permission|access is denied/.test(text)) return 'filesystem';
+  if (/403|404|410|source unavailable|not found/.test(text)) return 'source_response';
+  if (/timeout|timed out|econn|network|socket|dns|offline/.test(text)) return 'network_request';
+  if (/hash|checksum|verify|corrupt/.test(text)) return 'verification';
+  if (/move|rename|copy|finaliz/.test(text)) return 'finalization';
+  return 'engine';
 }
 
 function classifyDownloadError(message: unknown): string {
@@ -207,6 +233,7 @@ export function dbUpdateTorrentStats(id: string, patch: Partial<TorrentRow>) {
   if (existing && patch.status === 'error' && existing.status !== 'error') {
     captureDownloadAnalytics('download_failed', { ...existing, ...patch } as TorrentRow, {
       error_category: classifyDownloadError(patch.error_msg || existing.error_msg),
+      error_stage: classifyDownloadStage(patch.error_msg || existing.error_msg),
     });
   }
 }

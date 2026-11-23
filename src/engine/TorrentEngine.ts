@@ -20,6 +20,7 @@ import {
   dbGetTorrent,
   dbDeleteTorrent,
   dbGetSetting,
+  dbCaptureDownloadEvent,
 } from './db.js';
 
 const PORT = 3001;
@@ -204,6 +205,8 @@ class TorrentEngine extends EventEmitter {
     const activeIds = engineTorrents.map((t: any) => t.id);
 
     for (const row of rows) {
+      const wasInterrupted = ['downloading', 'verifying', 'moving'].includes(row.status) && row.task_kind !== 'repair';
+      if (wasInterrupted) dbCaptureDownloadEvent('download_interrupted', row, { resume_stage: 'startup_torrent' });
       if (!activeIds.includes(row.id)) {
         if (row.task_kind === 'repair') {
           dbUpdateTorrentStats(row.id, { status: 'error', error_msg: 'Repair state was not saved. Remove this task without deleting files, then select Repair files and scan again.' });
@@ -219,7 +222,15 @@ class TorrentEngine extends EventEmitter {
       }
 
       if (row.status !== 'paused') {
-        await fetch(API_URL + '/resume', { method: 'POST', body: JSON.stringify({ id: row.id }) }).catch(() => {});
+        try {
+          const response = await fetch(API_URL + '/resume', { method: 'POST', body: JSON.stringify({ id: row.id }) });
+          if (wasInterrupted) {
+            if (response.ok) dbCaptureDownloadEvent('download_resumed', row, { resume_stage: 'startup_torrent' });
+            else dbCaptureDownloadEvent('download_resume_failed', row, { resume_stage: 'startup_torrent', error_category: 'engine', error_stage: 'engine' });
+          }
+        } catch {
+          if (wasInterrupted) dbCaptureDownloadEvent('download_resume_failed', row, { resume_stage: 'startup_torrent', error_category: 'network', error_stage: 'network_request' });
+        }
       }
       if (row.status === 'paused') {
         try {

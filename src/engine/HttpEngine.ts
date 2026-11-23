@@ -11,6 +11,7 @@ import {
   dbGetSetting,
   dbDeleteTorrent,
   dbGetAllTorrents,
+  dbCaptureDownloadEvent,
 } from './db';
 import { recordCompletion } from './Library';
 
@@ -19,15 +20,36 @@ interface ActiveDownload {
   writer?: fs.WriteStream;
   done?: Promise<void>;
   isPaused?: boolean;
+  isRestore?: boolean;
+  isManualResume?: boolean;
+  resumeAttemptedBytes?: number;
+  resumeEventSent?: boolean;
+  isShuttingDown?: boolean;
+  retryTimer?: NodeJS.Timeout;
+  retryWaitResolve?: () => void;
 }
 
-class HttpEngine {
+export class HttpEngine {
   private activeDownloads = new Map<string, ActiveDownload>();
   private speedLimitBytesPerSec = 0;
+  private shuttingDown = false;
 
   setSpeedLimit(bytesPerSec: number) {
     this.speedLimitBytesPerSec = bytesPerSec;
     console.log(`[HttpEngine] Speed limit set to: ${bytesPerSec === 0 ? 'Unlimited' : (bytesPerSec / (1024 * 1024)).toFixed(0) + ' MB/s'}`);
+  }
+
+  private waitForRetry(activeItem: ActiveDownload, delayMs: number): Promise<void> {
+    return new Promise(resolve => {
+      const finish = () => {
+        if (activeItem.retryTimer) clearTimeout(activeItem.retryTimer);
+        activeItem.retryTimer = undefined;
+        activeItem.retryWaitResolve = undefined;
+        resolve();
+      };
+      activeItem.retryWaitResolve = finish;
+      activeItem.retryTimer = setTimeout(finish, delayMs);
+    });
   }
 
   /** Resume interrupted HTTP downloads after the local API is restarted. */
@@ -43,10 +65,15 @@ class HttpEngine {
       const tempDir = row.save_path || path.join(destDir, '.mn-temp');
       try {
         fs.mkdirSync(tempDir, { recursive: true });
+        const partFile = path.join(tempDir, `${row.id}.part`);
+        let partialBytes = 0;
+        try { if (fs.existsSync(partFile)) partialBytes = fs.statSync(partFile).size; } catch {}
+        dbCaptureDownloadEvent('download_interrupted', row, { resume_stage: 'startup_http', partial_bytes: partialBytes });
         console.log(`[HttpEngine] Restoring interrupted HTTP download: ${row.name}`);
-        this.startDownload(row.id, row.magnet, row.name, tempDir, destDir);
+        this.startDownload(row.id, row.magnet, row.name, tempDir, destDir, true);
         restored++;
       } catch (error: any) {
+        dbCaptureDownloadEvent('download_resume_failed', row, { resume_stage: 'startup_http', error_stage: 'filesystem', error_category: 'permission' });
         dbMarkError(row.id, `Could not restore download: ${error.message}`);
       }
     }
@@ -113,6 +140,7 @@ class HttpEngine {
   }
 
   async add(url: string, gameName?: string, sourceId?: string) {
+    if (this.shuttingDown) throw new Error('HTTP download engine is shutting down.');
     // Generate a pseudo-infohash (40 hex chars) using md5 + padding
     const id = crypto.createHash('md5').update(url).digest('hex') + '00000000';
     const cleanName = this.getCleanFileName(gameName || url.split('/').pop()?.split('?')[0] || 'Direct Download', url);
@@ -152,7 +180,8 @@ class HttpEngine {
     return { id, name: cleanName };
   }
 
-  private async startDownload(id: string, url: string, name: string, tempDir: string, destDir: string) {
+  private async startDownload(id: string, url: string, name: string, tempDir: string, destDir: string, isRestore = false, isManualResume = false) {
+    if (this.shuttingDown) return;
     // If already downloading, don't start duplicate stream
     if (this.activeDownloads.has(id)) {
       return;
@@ -162,7 +191,7 @@ class HttpEngine {
     const finalFile = path.join(destDir, name);
 
     const abortController = new AbortController();
-    const activeItem: ActiveDownload = { abortController, isPaused: false };
+    const activeItem: ActiveDownload = { abortController, isPaused: false, isRestore, isManualResume };
     this.activeDownloads.set(id, activeItem);
 
     dbUpdateTorrentStats(id, { status: 'downloading', error_msg: null });
@@ -178,6 +207,10 @@ class HttpEngine {
           } catch {
             existingBytes = 0;
           }
+        }
+        const requestedResumeBytes = existingBytes;
+        if ((activeItem.isRestore || activeItem.isManualResume) && requestedResumeBytes > 0) {
+          activeItem.resumeAttemptedBytes = Math.max(activeItem.resumeAttemptedBytes || 0, requestedResumeBytes);
         }
 
         try {
@@ -269,6 +302,16 @@ class HttpEngine {
             if (!isPartial) {
               existingBytes = 0;
             }
+          }
+
+          if ((activeItem.isRestore || activeItem.isManualResume) && !activeItem.resumeEventSent) {
+            const restoredRow = dbGetTorrent(id);
+            const resumeStage = activeItem.isRestore ? 'http_response' : 'manual_http';
+            const resumeBytesObserved = Math.max(requestedResumeBytes, activeItem.resumeAttemptedBytes || 0);
+            const restartedFromZero = resumeBytesObserved > 0 && response.status !== 206;
+            const resumeEvent = restartedFromZero ? 'download_resume_restarted' : 'download_resumed';
+            if (restoredRow) dbCaptureDownloadEvent(resumeEvent, restoredRow, { resume_stage: resumeStage, partial_bytes: resumeBytesObserved });
+            activeItem.resumeEventSent = true;
           }
 
           if (totalLength > 0) {
@@ -398,12 +441,12 @@ class HttpEngine {
           const finalSizeOnDisk = fs.existsSync(tempFile) ? fs.statSync(tempFile).size : 0;
           if (finalSizeOnDisk > existingBytes) retryCount = 0;
           if (totalLength > 0 && finalSizeOnDisk >= totalLength) {
-            this.activeDownloads.delete(id);
             await this.finalizeDownload(id, tempFile, finalFile, destDir);
+            this.activeDownloads.delete(id);
             return;
           } else if (totalLength === 0 && finalSizeOnDisk > 0) {
-            this.activeDownloads.delete(id);
             await this.finalizeDownload(id, tempFile, finalFile, destDir);
+            this.activeDownloads.delete(id);
             return;
           }
 
@@ -412,7 +455,7 @@ class HttpEngine {
           const retryDelay = Math.min(30000, 2000 * (2 ** Math.min(retryCount - 1, 4)));
           console.warn(`[HttpEngine] Stream ended prematurely (${finalSizeOnDisk}/${totalLength} bytes). Retrying in ${Math.ceil(retryDelay / 1000)}s.`);
           dbUpdateTorrentStats(id, { speed_dl: 0, eta_secs: -1, status: 'downloading' });
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+          await this.waitForRetry(activeItem, retryDelay);
 
         } catch (err: any) {
           if (activeItem.isPaused || axios.isCancel(err) || !this.activeDownloads.has(id)) {
@@ -430,6 +473,11 @@ class HttpEngine {
           if ([400, 401, 403, 404, 410, 451].includes(status)) {
             const message = `Download source rejected this request (HTTP ${status}). Open the official source page and check access or availability.`;
             console.warn(`[HttpEngine] Permanent source error for ${id}: ${message}`);
+            if (activeItem.isRestore || activeItem.isManualResume) {
+              const failedRow = dbGetTorrent(id);
+              const resumeStage = activeItem.isRestore ? 'startup_http' : 'manual_http';
+              if (failedRow) dbCaptureDownloadEvent('download_resume_failed', failedRow, { resume_stage: resumeStage, error_category: 'source_unavailable', error_stage: 'source_response' });
+            }
             this.activeDownloads.delete(id);
             dbMarkError(id, message);
             return;
@@ -441,12 +489,12 @@ class HttpEngine {
             ? Math.min(60000, retryAfter * 1000)
             : Math.min(30000, 2000 * (2 ** Math.min(retryCount - 1, 4)));
           console.warn(`[HttpEngine] Retrying ${id} in ${Math.ceil(retryDelay / 1000)}s (attempt ${retryCount}).`);
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+          await this.waitForRetry(activeItem, retryDelay);
         }
       }
 
       // If loop exited because of pause
-      if (activeItem.isPaused) {
+      if (activeItem.isPaused && !activeItem.isShuttingDown) {
         this.activeDownloads.delete(id);
         dbUpdateTorrentStats(id, { status: 'paused', speed_dl: 0, eta_secs: -1 });
       }
@@ -455,6 +503,44 @@ class HttpEngine {
     // Keep a completion promise so delete can wait for the response stream and
     // file writer to close before removing the temporary .part file on Windows.
     activeItem.done = downloadLoop();
+  }
+
+  /**
+   * Abort active streams safely but retain their database state and .part files.
+   * The next app launch can resume them with the HTTP Range request path.
+   */
+  async shutdown(): Promise<void> {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    const active = [...this.activeDownloads.entries()];
+    for (const [, item] of active) {
+      item.isShuttingDown = true;
+      item.isPaused = true;
+      if (item.retryTimer) clearTimeout(item.retryTimer);
+      item.retryWaitResolve?.();
+      try { item.abortController.abort(); } catch {}
+    }
+
+    await Promise.all(active.map(async ([id, item]) => {
+      try { await item.done; } catch { /* Aborted streams are expected during shutdown. */ }
+      const writer = item.writer;
+      if (writer && !writer.closed) {
+        await new Promise<void>(resolve => {
+          if (writer.closed) return resolve();
+          writer.once('close', () => resolve());
+        });
+      }
+      const row = dbGetTorrent(id);
+      if (row && row.status !== 'completed' && row.status !== 'error') {
+        const tempFile = path.join(row.save_path || path.join(row.dest_path || '', '.mn-temp'), `${id}.part`);
+        let partialBytes = 0;
+        try { if (fs.existsSync(tempFile)) partialBytes = fs.statSync(tempFile).size; } catch {}
+        const progress = row.size > 0 ? Math.max(0, Math.min(1, partialBytes / row.size)) : row.progress;
+        dbUpdateTorrentStats(id, { progress, speed_dl: 0, eta_secs: -1 });
+      }
+      this.activeDownloads.delete(id);
+    }));
+    console.log(`[HttpEngine] Graceful shutdown complete; preserved ${active.length} active download(s) for resume.`);
   }
 
   private async finalizeDownload(id: string, tempFile: string, finalFile: string, destDir: string) {
@@ -520,12 +606,13 @@ class HttpEngine {
   }
 
   resume(id: string) {
+    if (this.shuttingDown) return;
     const row = dbGetTorrent(id);
     if (row && (row.status === 'paused' || row.status === 'error' || row.status === 'queued')) {
       const destPath = row.dest_path || dbGetSetting('download_path');
       const tempDir = row.save_path || path.join(destPath, '.mn-temp');
 
-      this.startDownload(id, row.magnet, row.name, tempDir, destPath);
+      this.startDownload(id, row.magnet, row.name, tempDir, destPath, false, true);
     }
   }
 
